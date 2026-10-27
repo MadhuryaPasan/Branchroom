@@ -1,5 +1,8 @@
 name: Build and test
 on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+
 jobs:
   build:
     strategy:
@@ -23,11 +26,50 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/Build-Windows.ps1 -SkipChecks
+      - name: Prepare release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+
+          if ($env:RUNNER_OS -eq 'Windows') {
+            Copy-Item target/release/branchroom.exe release-assets/
+            Copy-Item dist/*.zip release-assets/
+            Copy-Item dist/latest.json release-assets/
+          } else {
+            $archive = "branchroom-${env:RUNNER_OS}-${env:RUNNER_ARCH}.tar.gz"
+            tar -czf "release-assets/$archive" -C target/release branchroom
+            if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed.' }
+          }
+
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: branchroom-${{ runner.os }}
-          path: |
-            target/release/branchroom.exe
-            target/release/branchroom
-            dist/*.zip
-            dist/latest.json
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v8
+        with:
+          pattern: branchroom-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+            artifacts/*.tar.gz
+            artifacts/latest.json

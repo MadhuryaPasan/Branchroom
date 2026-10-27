@@ -21,6 +21,8 @@ cargo run --locked -- "C:\Projects\my-project"
 
 ## Build and verify
 
+To publish downloads on GitHub, follow the [release guide](docs/RELEASING.md), with separate steps for Git commands and GitHub Desktop.
+
 ```powershell
 ./scripts/Build-Windows.ps1
 ```
