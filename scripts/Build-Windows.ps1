@@ -23,7 +23,11 @@ try {
     New-Item -ItemType Directory -Path $package | Out-Null
     Copy-Item -LiteralPath target/release/branchroom.exe -Destination (Join-Path $package 'branchroom.exe')
     Copy-Item -LiteralPath README.md,LICENSE -Destination $package
-    Copy-Item -LiteralPath docs -Destination (Join-Path $package 'docs') -Recurse
+    if (Test-Path -LiteralPath docs -PathType Container) {
+        Copy-Item -LiteralPath docs -Destination (Join-Path $package 'docs') -Recurse
+    } else {
+        Write-Warning 'No docs directory in this checkout. Packaging README.md and LICENSE only.'
+    }
     $hashes = Get-ChildItem -LiteralPath $package -File -Recurse | ForEach-Object {
         [ordered]@{path=$_.FullName.Substring($package.Length+1).Replace('\','/'); sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash; bytes=$_.Length}
     }
@@ -31,7 +35,8 @@ try {
     $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $package 'manifest.json') -Encoding UTF8
     $zip = "$package.zip"
     Compress-Archive -LiteralPath $package -DestinationPath $zip
-    [ordered]@{version=$version;directory=$package;executable=(Join-Path $package 'branchroom.exe');archive=$zip;archiveSha256=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content -LiteralPath dist/latest.json -Encoding UTF8
+    # Store paths relative to dist so shared metadata does not expose workstation paths.
+    [ordered]@{version=$version;directory=$packageName;executable="$packageName/branchroom.exe";archive="$packageName.zip";archiveSha256=(Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash} | ConvertTo-Json | Set-Content -LiteralPath dist/latest.json -Encoding UTF8
     # A unique package stays available when an older executable is running.
     try { Copy-Item -LiteralPath (Join-Path $package 'branchroom.exe') -Destination dist/branchroom.exe -ErrorAction Stop }
     catch { Write-Warning 'The previous dist/branchroom.exe is in use. Use the new versioned package.' }

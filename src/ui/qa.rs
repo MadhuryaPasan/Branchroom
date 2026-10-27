@@ -833,8 +833,8 @@ fn render_patch_preview() {
         let mut harness = screen(Page::History, false);
         harness.state_mut().settings.light_theme = light;
         theme::install(&harness.ctx, light);
-        harness.state_mut().detail_title = "Commit 1a9581ea · patch".into();
-        harness.state_mut().detail = "finish tutorial\n\n src/main.rs | 4 ++--\n 1 file changed, 2 insertions(+), 2 deletions(-)\n\ndiff --git a/src/main.rs b/src/main.rs\nindex 22e896e..cd26500 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n-#[derive(Debug)]\n-trait OldSummary {\n+trait Summary {\n+    fn summarize(&self) -> String;\n }\n".into();
+        harness.state_mut().detail_title = "Commit abc12345 · patch".into();
+        harness.state_mut().detail = "Improve cache defaults\n\n src/cache.rs | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n\ndiff --git a/src/cache.rs b/src/cache.rs\nindex 1111111..2222222 100644\n--- a/src/cache.rs\n+++ b/src/cache.rs\n@@ -1 +1 @@\n-const CACHE_LIMIT: usize = 64;\n+const CACHE_LIMIT: usize = 128;\n".into();
         harness.state_mut().detail_page = Page::History;
         harness.state_mut().detail_open = true;
         harness.run_steps(3);
@@ -969,8 +969,8 @@ fn repository_menu_filters_recent_paths_without_hiding_current_repository() {
     let current = harness.state().path();
     harness.state_mut().settings.recent = vec![
         current.clone(),
-        PathBuf::from("C:/projects/rust_tutorial"),
-        PathBuf::from("C:/projects/web_app"),
+        PathBuf::from("C:/projects/sample-rust-project"),
+        PathBuf::from("C:/projects/sample-web-project"),
     ];
     harness.run_steps(3);
     harness
@@ -981,12 +981,12 @@ fn repository_menu_filters_recent_paths_without_hiding_current_repository() {
     harness.run_steps(2);
     assert!(
         harness
-            .query_by_label("rust_tutorial — C:/projects/rust_tutorial")
+            .query_by_label("sample-rust-project — C:/projects/sample-rust-project")
             .is_some()
     );
     assert!(
         harness
-            .query_by_label("web_app — C:/projects/web_app")
+            .query_by_label("sample-web-project — C:/projects/sample-web-project")
             .is_none()
     );
     assert!(

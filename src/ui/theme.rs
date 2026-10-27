@@ -58,13 +58,26 @@ pub(super) fn SNAPSHOT() -> Color32 {
     color((196, 166, 250), (105, 62, 155))
 }
 
+fn bundled_fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    // Hack ships with egui and covers symbols (including arrows) missing from Ubuntu Light.
+    // Keep it as a fallback so text still uses the proportional face where available.
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("Hack".into());
+    fonts
+}
+
 pub(super) fn install(ctx: &egui::Context, light: bool) {
     LIGHT.with(|value| value.set(light));
-    let fonts = egui::FontDefinitions::default();
-    #[cfg(windows)]
+    let fonts = bundled_fonts();
+    #[cfg(all(windows, not(test)))]
     let mut fonts = fonts;
-    // Prefer the installed system face; Windows fonts are never redistributed with the app.
-    #[cfg(windows)]
+    // Prefer the installed system face in production. Tests use bundled fonts on every OS.
+    // Windows fonts are never redistributed with the app.
+    #[cfg(all(windows, not(test)))]
     if let Ok(bytes) = std::fs::read("C:/Windows/Fonts/segoeui.ttf") {
         fonts
             .font_data
@@ -75,7 +88,7 @@ pub(super) fn install(ctx: &egui::Context, light: bool) {
             .or_default()
             .insert(0, "system-ui".into());
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     for (name, path) in [
         ("system-symbols", "C:/Windows/Fonts/seguisym.ttf"),
         ("system-languages", "C:/Windows/Fonts/Nirmala.ttf"),
@@ -541,5 +554,21 @@ mod contrast_tests {
             );
         }
         LIGHT.with(|v| v.set(false));
+    }
+}
+
+#[cfg(all(test, feature = "ui-preview"))]
+mod bundled_font_tests {
+    use super::*;
+    #[test]
+    fn bundled_fonts_render_ui_symbols_without_system_fonts() {
+        let mut harness = egui_kittest::Harness::builder()
+            .with_context_setup(|ctx| ctx.set_fonts(bundled_fonts()))
+            .build_ui(|ui| {
+                ui.label("→ ← ↑ ↓ ↔ − … · × Δ – —");
+                ui.monospace("→ ← ↑ ↓ ↔ − … · × Δ – —");
+            });
+        // The harness uses MissingGlyphPolicy::Panic, so a missing symbol fails this test.
+        harness.run_steps(3);
     }
 }

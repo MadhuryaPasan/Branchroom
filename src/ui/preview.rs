@@ -50,7 +50,12 @@ impl Branchroom {
         self.selected_snapshot.clear();
         self.query.clear();
         let long = self.preview_state == 5;
-        let root = std::env::temp_dir().join("branchroom-ui-preview-fixtures");
+        // Render fixtures must not expose the developer's profile path.
+        let root = if cfg!(windows) {
+            PathBuf::from("C:/Projects/sample-project")
+        } else {
+            PathBuf::from("/projects/sample-project")
+        };
         let id = |n: usize| {
             format!(
                 "{:08x}{:032x}",
@@ -65,7 +70,7 @@ impl Branchroom {
             "Choose the default workspace theme",
             "Create the notes workspace",
         ];
-        let commits:Vec<_>=names.iter().enumerate().map(|(i,name)|git::Commit{id:id(5-i),parents:if i==4{vec![]}else if i==1{vec![id(3),id(2)]}else{vec![id(4-i)]},refs:if i==0{"HEAD -> feature/offline".into()}else if i==1{"main, tag: v0.2.0".into()}else{String::new()},subject:if long&&i==0{format!("{name} with incremental reconciliation across every disconnected account and background synchronization job")}else{(*name).into()},author:if long{"Alexandra Wijesinghe — Infrastructure Engineering".into()}else{"Alex Wijesinghe".into()},date:"2 hours ago".into()}).collect();
+        let commits:Vec<_>=names.iter().enumerate().map(|(i,name)|git::Commit{id:id(5-i),parents:if i==4{vec![]}else if i==1{vec![id(3),id(2)]}else{vec![id(4-i)]},refs:if i==0{"HEAD -> feature/offline".into()}else if i==1{"main, tag: v0.2.0".into()}else{String::new()},subject:if long&&i==0{format!("{name} with incremental reconciliation across every disconnected account and background synchronization job")}else{(*name).into()},author:if long{"Sample Developer — Infrastructure Engineering".into()}else{"Sample Developer".into()},date:"2 hours ago".into()}).collect();
         let snapshots:Vec<_>=["Larger offline cache","Streaming cache writer","Keep the smaller memory budget"].iter().enumerate().map(|(i,label)|git::Snapshot{reference:format!("refs/branchroom/snapshots/{}",i+1),id:id(100+i),label:if long{format!("{label} — experiment with an unusually descriptive name for the disconnected synchronization path")}else{(*label).into()},date:if i==0{"1 hour ago".into()}else{format!("{} hours ago",i+1)},parents:vec![id(if i<2{5}else{4})]}).collect();
         let mut repo = RepoState {
             head: id(5),

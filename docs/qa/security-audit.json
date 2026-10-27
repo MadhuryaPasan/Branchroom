@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-26",
+  "application_version": "0.2.0-rc.1",
+  "scope": "Cargo.lock, all target dependency graph",
+  "vulnerabilities": 0,
+  "warnings": [
+    {
+      "kind": "unmaintained",
+      "package": "zbus_names",
+      "advisory": "RUSTSEC-2026-0371",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043"
+    },
+    {
+      "kind": "unmaintained",
+      "package": "zvariant",
+      "advisory": "RUSTSEC-2026-0370",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043"
+    },
+    {
+      "kind": "unmaintained",
+      "package": "zvariant_derive",
+      "advisory": "RUSTSEC-2026-0372",
+      "url": "https://github.com/z-galaxy/zbus/issues/2043"
+    }
+  ]
+}

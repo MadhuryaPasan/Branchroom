@@ -3,4 +3,6 @@
 /old-builds-to-delete/
 *.log
 
-docs/
+
+# Local UI captures may contain workstation or repository information.
+/docs/qa/ui/

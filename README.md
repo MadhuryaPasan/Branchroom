@@ -106,7 +106,7 @@ In History, drag a column boundary in the header to resize the graph, commit, au
 
 The UI holds immutable shared repository state and cached history geometry/filter results. History, diffs, and flat changed-file lists are virtualized; very large change sets default to the list view. Git work runs off the UI thread. Commands go through argument vectors, never a shell string. Git still runs the repository's configured hooks and filters; the app is not a sandbox for untrusted projects.
 
-Preferences live under `%APPDATA%\Branchroom` on Windows (`$XDG_CONFIG_HOME/Branchroom` or `~/.config/Branchroom` elsewhere). This includes local draft text and discard-recovery copies; treat that directory as private project data. A `protected-repositories.json` array of absolute paths makes repositories read-only in Branchroom; malformed policy blocks writes until repaired. The guard blocks mutation and IDE/terminal launch and suppresses optional Git index writes on inspection. It is an app policy, not an OS security boundary. No write tests were run against J26-DS-323.
+Preferences live under `%APPDATA%\Branchroom` on Windows (`$XDG_CONFIG_HOME/Branchroom` or `~/.config/Branchroom` elsewhere). This includes local draft text and discard-recovery copies; treat that directory as private project data. A `protected-repositories.json` array of absolute paths makes repositories read-only in Branchroom; malformed policy blocks writes until repaired. The guard blocks mutation and IDE/terminal launch and suppresses optional Git index writes on inspection. It is an app policy, not an OS security boundary. Tests use disposable repositories.
 
 ## QA and dependency evidence
 
