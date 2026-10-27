@@ -60,7 +60,9 @@ pub(super) fn SNAPSHOT() -> Color32 {
 
 pub(super) fn install(ctx: &egui::Context, light: bool) {
     LIGHT.with(|value| value.set(light));
-    let mut fonts = egui::FontDefinitions::default();
+    let fonts = egui::FontDefinitions::default();
+    #[cfg(windows)]
+    let mut fonts = fonts;
     // Prefer the installed system face; Windows fonts are never redistributed with the app.
     #[cfg(windows)]
     if let Ok(bytes) = std::fs::read("C:/Windows/Fonts/segoeui.ttf") {

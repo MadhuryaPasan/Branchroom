@@ -30,10 +30,9 @@ fn tracking_counts(tracking: &str) -> Option<(usize, usize)> {
     for part in value.split(',').map(str::trim) {
         if let Some(n) = part.strip_prefix("ahead ") {
             result.0 = n.parse().ok()?;
-        } else if let Some(n) = part.strip_prefix("behind ") {
-            result.1 = n.parse().ok()?;
         } else {
-            return None;
+            let n = part.strip_prefix("behind ")?;
+            result.1 = n.parse().ok()?;
         }
     }
     Some(result)

@@ -294,7 +294,38 @@ impl Branchroom {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(0)).show(ui, |ui| {
             ui.add_enabled_ui(self.pending.is_none() && self.form.is_none(), |ui| {
                 if self.repo.is_none() && !matches!(self.page, Page::Remotes | Page::Settings) { self.welcome(ui, ctx); return; }
-                if let Some(repo) = &self.repo { let count = repo.changes.iter().filter(|c| c.conflict()).count(); if count > 0 || !repo.operation.is_empty() { egui::Frame::new().fill(SELECTED()).inner_margin(12).show(ui, |ui| { ui.horizontal_wrapped(|ui| { if count > 0 { badge(ui, &format!("{count} conflicts"), DANGER()); ui.label("Some files need your attention before you can continue."); } else { badge(ui, "Operation in progress", WARNING()); ui.label("Continue or cancel the operation."); } if ui.button(if count > 0 { "Resolve conflicts" } else { "Review operation" }).clicked() { self.page = Page::Conflicts; } }); }); } }
+                if let Some(repo) = &self.repo {
+                    let count = repo.changes.iter().filter(|c| c.conflict()).count();
+                    if count > 0 || !repo.operation.is_empty() {
+                        egui::Frame::new()
+                            .fill(SELECTED())
+                            .inner_margin(12)
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    if count > 0 {
+                                        badge(ui, &format!("{count} conflicts"), DANGER());
+                                        ui.label(
+                                            "Some files need your attention before you can continue.",
+                                        );
+                                    } else {
+                                        badge(ui, "Operation in progress", WARNING());
+                                        ui.label("Continue or cancel the operation.");
+                                    }
+                                    if ui
+                                        .button(if count > 0 {
+                                            "Resolve conflicts"
+                                        } else {
+                                            "Review operation"
+                                        })
+                                        .clicked()
+                                    {
+                                        self.page = Page::Conflicts;
+                                    }
+                                });
+                            });
+                    }
+                }
+
                 if ctx.content_rect().width() >= 800. && matches!(self.page, Page::History | Page::Branches | Page::Merge | Page::Compare | Page::Snapshots | Page::Stashes) { ui.horizontal_wrapped(|ui| {
                     let pages: &[Page] = if matches!(self.page, Page::Snapshots | Page::Stashes) { &[Page::Snapshots, Page::Stashes, Page::Compare] } else { &[Page::History, Page::Branches, Page::Merge, Page::Compare] };
                     for &page in pages { let label = match page { Page::Snapshots => "Saved points", Page::History => "Commit graph", _ => page.title() }; if ui.selectable_label(self.page == page, label).clicked() { self.page=page; } }
