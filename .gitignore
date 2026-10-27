@@ -1,0 +1,6 @@
+/target/
+/dist/
+/old-builds-to-delete/
+*.log
+
+docs/

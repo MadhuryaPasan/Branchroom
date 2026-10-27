@@ -1,0 +1,28 @@
+[package]
+name = "branchroom"
+version = "0.2.0-rc.1"
+edition = "2024"
+rust-version = "1.95"
+description = "A native Git workspace with independent project snapshots"
+license = "MIT"
+
+[features]
+ui-preview = []
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow", "x11", "wayland", "accesskit", "links"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+rfd = "0.17.2"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+
+[dev-dependencies]
+egui_kittest = { version = "0.37.0", default-features = false, features = ["eframe", "wgpu", "snapshot"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
