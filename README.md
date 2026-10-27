@@ -1,6 +1,6 @@
 # Branchroom
 
-A native Rust Git workspace for Windows, with branch history, pull requests, and independent project snapshots. Version **0.2.0-rc.1** is a release candidate. The [production audit](docs/PRODUCTION-AUDIT.md) records what was tested, what changed, and the remaining release gates. The [migration matrix](docs/GITHUB-DESKTOP-PARITY.md) distinguishes dedicated workflows from command-runner coverage and missing features.
+A native Rust Git workspace for Windows, with branch history, pull requests, and independent project snapshots. Version **0.1.0-rc.1** is a release candidate. The [production audit](docs/PRODUCTION-AUDIT.md) records what was tested, what changed, and the remaining release gates. The [migration matrix](docs/GITHUB-DESKTOP-PARITY.md) distinguishes dedicated workflows from command-runner coverage and missing features.
 
 ## Run on Windows
 
