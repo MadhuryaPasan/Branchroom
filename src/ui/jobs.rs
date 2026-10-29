@@ -24,7 +24,8 @@ impl Branchroom {
             | Task::CommitFiles(_)
             | Task::ConflictSides(_)
             | Task::PullRequestDetails(_)
-            | Task::PullRequests
+            | Task::PullRequests(_)
+            | Task::PullRequestPreview { .. }
             | Task::CommitPullRequests(_) => true,
             _ => false,
         };
@@ -75,6 +76,7 @@ impl Branchroom {
         let ctx = ctx.clone();
         let (tx, rx) = mpsc::channel();
         self.receiver = Some(rx);
+        self.job_started = Some(Instant::now());
         self.busy = match &task {
             Task::Command { args, .. } if args.first().is_some_and(|a| a == "push") => {
                 "Uploading commits…"
@@ -86,7 +88,8 @@ impl Branchroom {
             {
                 "Downloading remote updates…"
             }
-            Task::PullRequests => "Loading pull requests…",
+            Task::PullRequests(_) => "Loading pull requests…",
+            Task::PullRequestPreview { .. } => "Previewing pull request…",
             Task::OpenPr { .. } => "Downloading pull request for IDE review…",
             Task::UpdateBranch { .. } => "Fetching baseline and updating branch…",
             Task::Revert { .. } => "Creating revert commit…",
@@ -311,6 +314,37 @@ impl Branchroom {
                     });
                     (result, false, false)
                 }
+                Task::PullRequestPreview { head, base } => {
+                    let result = (|| {
+                        let (_, head_id) = git::resolve_named_commit(&path, &head)?;
+                        let (_, base_id) = git::resolve_named_commit(&path, &base)?;
+                        let range = format!("{base_id}..{head_id}");
+                        let commits = git::git(
+                            &path,
+                            &["log", "--format=%h%x00%s", "-z", "--max-count=8", &range],
+                        )?
+                        .split_terminator('\0')
+                        .collect::<Vec<_>>()
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|pair| format!("{} · {}", pair[0].trim_start_matches('\n'), pair[1]))
+                        .collect();
+                        let comparison = format!("{base_id}...{head_id}");
+                        let files = git::git(&path, &["diff", "--name-status", &comparison])?
+                            .lines()
+                            .take(100)
+                            .map(str::to_owned)
+                            .collect();
+                        data = JobData::PullRequestPreview {
+                            key: format!("{head}\u{0}{base}"),
+                            commits,
+                            files,
+                        };
+                        Ok(String::new())
+                    })();
+                    (result, false, false)
+                }
                 Task::CreatePullRequest(request) => {
                     let result = branchroom::github::create(&path, &request);
                     if result.is_ok() {
@@ -349,11 +383,12 @@ impl Branchroom {
                     }
                     (result, false, false)
                 }
-                Task::PullRequests => {
-                    let result = branchroom::collaboration::pull_requests(&path).map(|prs| {
-                        data = JobData::PullRequests(prs);
-                        "Pull requests loaded.".into()
-                    });
+                Task::PullRequests(filter) => {
+                    let result =
+                        branchroom::collaboration::pull_requests(&path, filter).map(|prs| {
+                            data = JobData::PullRequests(prs);
+                            "Pull requests loaded.".into()
+                        });
                     (result, false, false)
                 }
                 Task::Revert {
@@ -439,22 +474,7 @@ impl Branchroom {
                     false,
                 ),
                 Task::CommitFiles(id) => {
-                    let result = git::git(
-                        &path,
-                        &[
-                            "diff-tree",
-                            "--root",
-                            "--no-commit-id",
-                            "--numstat",
-                            "--no-renames",
-                            "--first-parent",
-                            "-r",
-                            "-z",
-                            &id,
-                        ],
-                    )
-                    .map(|output| {
-                        let files = CommitFile::parse(&output);
+                    let result = super::inspector::files(&path, &id).map(|files| {
                         data = JobData::Files { commit: id, files };
                         String::new()
                     });

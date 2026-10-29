@@ -183,11 +183,43 @@ impl Branchroom {
                         "No remotes configured. Add one to fetch and publish this project.",
                     );
                 } else {
-                    ui.add(
-                        egui::Label::new(RichText::new(&repo.remotes).monospace())
-                            .wrap()
-                            .selectable(true),
-                    );
+                    let mut remote_rows = std::collections::BTreeMap::new();
+                    for line in repo.remotes.lines() {
+                        let mut fields = line.split_whitespace();
+                        if let (Some(name), Some(url), Some(direction)) =
+                            (fields.next(), fields.next(), fields.next())
+                        {
+                            let urls = remote_rows
+                                .entry(name.to_owned())
+                                .or_insert_with(|| (String::new(), String::new()));
+                            if direction == "(push)" {
+                                urls.1 = url.to_owned();
+                            } else {
+                                urls.0 = url.to_owned();
+                            }
+                        }
+                    }
+                    egui::Grid::new("remote_table")
+                        .num_columns(4)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Remote").strong());
+                            ui.label(RichText::new("Fetch URL").strong());
+                            ui.label(RichText::new("Push URL").strong());
+                            ui.label("");
+                            ui.end_row();
+                            for (name, (fetch_url, push_url)) in remote_rows {
+                                ui.horizontal(|ui|{let (rect,_)=ui.allocate_exact_size(egui::vec2(18.,18.),egui::Sense::hover());icon(ui.painter(),rect,Icon::Cloud,MUTED());ui.label(RichText::new(&name).strong());});
+                                ui.add(egui::Label::new(&fetch_url).truncate().selectable(true));
+                                ui.add(egui::Label::new(&push_url).truncate().selectable(true));
+                                ui.menu_button("Edit",|ui|{
+                                    if ui.button("Edit fetch address…").clicked(){self.form("Edit fetch address","Change where this remote downloads from. The old address is saved in Time Machine","git",&["remote","set-url",&name],&[("Fetch address",&fetch_url)],&[]);ui.close();}
+                                    if ui.button("Edit push address…").clicked(){self.form("Edit push address","Change where this remote uploads to. The old address is saved in Time Machine","git",&["remote","set-url","--push",&name],&[("Push address",&push_url)],&[]);ui.close();}
+                                    if ui.button("Use Advanced remote form").clicked(){self.remote_name=name.clone();self.remote_url=fetch_url.clone();ui.close();}
+                                });
+                                ui.end_row();
+                            }
+                        });
                 }
                 ui.add_space(12.);
                 ui.horizontal_wrapped(|ui| {
@@ -281,19 +313,13 @@ impl Branchroom {
             surface().show(ui,|ui|{ui.heading("Set up GitHub access");ui.label("Install GitHub CLI, then sign in to browse and manage pull requests. Git-only features are available without it.");ui.hyperlink_to("Open GitHub CLI installation instructions","https://cli.github.com/");if ui.button("Check installation again").clicked(){self.github_available=process::find_executable("gh").is_some();if self.github_available{self.report(Ok("GitHub CLI found. Select Sign in to GitHub to continue.".into()));}else{self.report(Err("GitHub CLI was not found. Install it, then check again. If it was installed outside the standard location, restart Branchroom after adding it to PATH.".into()));}}});
             return;
         }
-        egui::CollapsingHeader::new("GitHub connection").default_open(true).show(ui,|ui|{
-            ui.horizontal_wrapped(|ui|{
-                ui.label(RichText::new("Account connection").size(18.).strong());
-                if primary(ui,"Sign in to GitHub…").clicked(){if self.preview_mode{self.report(Err("Sign-in is unavailable in UI preview. Restart without --ui-preview to connect GitHub.".into()));}else{self.report(process::github_login());}}
-                if ui.button("Check account").clicked(){self.detail_title="GitHub account".into();self.read("gh",process::strings(&["auth","status"]),ctx);}
-            });ui.add_space(8.);subtitle(ui,"Requires GitHub CLI (gh). Complete browser sign-in in the opened terminal; credentials stay with GitHub CLI.");
-        });
-        ui.add_space(20.);
+        self.github_connection(ui, ctx);
+        ui.add_space(12.);
         self.pr_workspace(ui, ctx);
         ui.add_space(20.);
         egui::CollapsingHeader::new("Repository tools & PR lookup").show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{
-                for(label,args)in[("Load pull requests",vec!["pr","list","--limit","50"]),("Load issues",vec!["issue","list","--limit","50"]),("Load Actions runs",vec!["run","list","--limit","30"]),("Browse repository",vec!["browse"])]{if ui.button(label).clicked(){self.detail_title=label.into();self.read("gh",process::strings(&args),ctx);}}
+                for(label,args)in[("Load issues",vec!["issue","list","--limit","50"]),("Load Actions runs",vec!["run","list","--limit","30"]),("Browse repository",vec!["browse"])]{if ui.button(label).clicked(){self.detail_title=label.into();self.read("gh",process::strings(&args),ctx);}}
             });ui.add_space(16.);
             ui.horizontal_wrapped(|ui|{
                 ui.label("Pull request number");ui.add(egui::TextEdit::singleline(&mut self.github_number).desired_width(90.).hint_text("42"));
@@ -428,6 +454,20 @@ impl Branchroom {
         );
         surface().show(ui, |ui| {
             ui.label(RichText::new("Workspace appearance").size(18.).strong());
+            if ui
+                .checkbox(
+                    &mut self.settings.advanced_mode,
+                    "Advanced mode (show raw operations and command tools)",
+                )
+                .changed()
+            {
+                self.save();
+            }
+            subtitle(
+                ui,
+                "Simple mode keeps the visual workflows in front. You can switch modes at any time.",
+            );
+            ui.add_space(12.);
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 let changed = ui

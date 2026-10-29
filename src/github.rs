@@ -46,6 +46,8 @@ pub struct CreateRequest {
     pub title: String,
     pub body: String,
     pub draft: bool,
+    pub publish_if_needed: bool,
+    pub publish_remote: String,
     pub reviewers: Vec<String>,
     pub labels: Vec<String>,
 }
@@ -86,6 +88,7 @@ impl CreateRequest {
 }
 pub fn create(root: &Path, request: &CreateRequest) -> Result<String> {
     crate::safety::ensure_writable(root)?;
+    git::validate_branch(root, &request.head)?;
     if git::resolve(root, &format!("refs/heads/{}", request.head))? != request.head_oid {
         return Err(
             "The compare branch changed after review. Preview the pull request again.".into(),
@@ -100,12 +103,37 @@ pub fn create(root: &Path, request: &CreateRequest) -> Result<String> {
         ],
     )?;
     let fields: Vec<_> = upstream.trim_end_matches('\n').split('\t').collect();
-    if fields
+    let has_upstream = fields
         .first()
-        .is_none_or(|s| !s.starts_with("refs/remotes/"))
-        || fields.get(1).is_some_and(|s| !s.is_empty())
-    {
-        return Err("Publish or sync the compare branch and fetch to verify its state before creating the pull request.".into());
+        .is_some_and(|s| s.starts_with("refs/remotes/"));
+    let needs_push = !has_upstream || fields.get(1).is_some_and(|s| !s.is_empty());
+    if needs_push {
+        if !request.publish_if_needed {
+            return Err("Publish or sync the compare branch and fetch to verify its state before creating the pull request.".into());
+        }
+        let upstream = fields.first().copied().unwrap_or_default();
+        let remote = upstream
+            .strip_prefix("refs/remotes/")
+            .and_then(|name| name.split_once('/').map(|(remote, _)| remote))
+            .filter(|remote| !remote.is_empty())
+            .unwrap_or(&request.publish_remote);
+        if remote.is_empty() || remote.starts_with('-') {
+            return Err("Choose a valid remote before publishing the compare branch.".into());
+        }
+        git::git(root, &["remote", "get-url", remote])
+            .map_err(|_| format!("The {remote} remote is unavailable. Choose another remote or add it in Repositories."))?;
+        process::run(
+            "git",
+            root,
+            &process::strings(&[
+                "push",
+                remote,
+                &format!("{}:refs/heads/{}", request.head_oid, request.head),
+            ]),
+        )
+        .map_err(|error| {
+            format!("The pull request was not created because publishing failed. {error}")
+        })?;
     }
     process::input(
         "gh",

@@ -14,6 +14,21 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Kind {
     Undo,
+    RenameBranch {
+        name: String,
+    },
+    BranchFrom {
+        name: String,
+        commit: String,
+    },
+    Revert {
+        commit: String,
+        mainline: Option<usize>,
+    },
+    MoveCommits {
+        name: String,
+        count: usize,
+    },
     Merge {
         source: String,
         target: String,
@@ -73,6 +88,7 @@ pub struct Preview {
     fingerprint: Fingerprint,
     watched: Vec<(String, String)>,
     commit_plan: Option<commit::Plan>,
+    move_base: Option<String>,
 }
 impl Preview {
     pub fn current_branch(&self) -> &str {
@@ -129,6 +145,18 @@ fn learning_command(root: &Path, review: &Preview) -> Result<String> {
                 command(&["cherry-pick", &review.watched[1].1])
             )
         }
+        Kind::Revert { commit, mainline } => {
+            let mut args = vec!["revert".to_owned(), "--no-edit".into()];
+            if let Some(n) = mainline {
+                args.extend(["-m".into(), n.to_string()]);
+            }
+            args.push(commit.clone());
+            display_command(&args)
+        }
+        Kind::RenameBranch { name } => {
+            command(&["branch", "-m", "--", &review.fingerprint.branch, name])
+        }
+        Kind::BranchFrom { name, commit } => command(&["branch", "--", name, commit]),
         Kind::Commit { message } => command(&["commit", "-m", message]),
         Kind::Amend {
             commit: target,
@@ -187,16 +215,25 @@ fn learning_command(root: &Path, review: &Preview) -> Result<String> {
                 rebase_command(root, &ids[0], false)
             )
         }
-        Kind::MoveToBranch { name } => format!(
-            "{}\n{}",
-            command(&["switch", "-c", name]),
-            command(&[
-                "update-ref",
-                &format!("refs/heads/{}", review.fingerprint.branch),
-                &review.watched[0].1,
-                review.fingerprint.head.as_deref().unwrap_or("")
-            ])
-        ),
+        Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. } => {
+            let original = format!("refs/heads/{}", review.fingerprint.branch);
+            let reset = if let Some(base) = &review.move_base {
+                command(&[
+                    "update-ref",
+                    &original,
+                    base,
+                    review.fingerprint.head.as_deref().unwrap_or(""),
+                ])
+            } else {
+                command(&[
+                    "update-ref",
+                    "-d",
+                    &original,
+                    review.fingerprint.head.as_deref().unwrap_or(""),
+                ])
+            };
+            format!("{}\n{reset}", command(&["switch", "-c", name]))
+        }
     })
 }
 fn destination(review: &Preview) -> &str {
@@ -493,6 +530,15 @@ fn sandbox_action(s: &Sandbox, p: &Preview) -> Result<()> {
         Kind::CherryPick { .. } => {
             s.run(&["cherry-pick", &p.watched[1].1])?;
         }
+        Kind::Revert { commit, mainline } => {
+            crate::collaboration::revert(&s.path, commit, *mainline)?;
+        }
+        Kind::RenameBranch { name } => {
+            s.run(&["branch", "-m", name])?;
+        }
+        Kind::BranchFrom { name, commit } => {
+            s.run(&["branch", "--", name, commit])?;
+        }
         Kind::Reset { commit } => {
             s.run(&["reset", "--mixed", commit])?;
         }
@@ -545,7 +591,7 @@ fn sandbox_action(s: &Sandbox, p: &Preview) -> Result<()> {
                 )?;
             }
         }
-        Kind::MoveToBranch { name } => {
+        Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. } => {
             s.run(&["checkout", "-b", name])?;
         }
         Kind::SquashRange { count, message } => {
@@ -585,9 +631,10 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
     crate::safety::ensure_writable(root)?;
     require_no_operation(root)?;
     match &mut kind {
-        Kind::Reset { commit } | Kind::Amend { commit, .. } => {
-            *commit = git::resolve(root, commit)?
-        }
+        Kind::Reset { commit }
+        | Kind::Amend { commit, .. }
+        | Kind::Revert { commit, .. }
+        | Kind::BranchFrom { commit, .. } => *commit = git::resolve(root, commit)?,
         Kind::Squash { source, target, .. } => {
             *source = git::resolve(root, source)?;
             *target = git::resolve(root, target)?;
@@ -617,6 +664,7 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
         kind,
         Kind::Merge { .. }
             | Kind::CherryPick { .. }
+            | Kind::Revert { .. }
             | Kind::Reorder { .. }
             | Kind::Squash { .. }
             | Kind::Amend { .. }
@@ -638,7 +686,53 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
 
     let mut watched = vec![];
     let mut commit_plan = None;
+    let mut move_base = None;
     let (summary, command) = match &kind {
+        Kind::RenameBranch { name } | Kind::BranchFrom { name, .. } => {
+            git::validate_branch(root, name)?;
+            if git::resolve(root, &format!("refs/heads/{name}")).is_ok() {
+                return Err("This branch already exists. Choose a different name".into());
+            }
+            (
+                match &kind {
+                    Kind::BranchFrom { commit, .. } => format!(
+                        "Create branch {name} at {}. The current branch and working files are kept",
+                        &commit[..7]
+                    ),
+                    _ => format!(
+                        "Rename {} to {name}. Commits and working files are kept",
+                        frozen.branch
+                    ),
+                },
+                String::new(),
+            )
+        }
+
+        Kind::Revert { commit, mainline } => {
+            crate::collaboration::require_idle(root)?;
+            if !frozen.status.is_empty() {
+                return Err("Commit or shelve working changes before reverting".into());
+            }
+            git(root, &["merge-base", "--is-ancestor", commit, "HEAD"]).map_err(|_| {
+                "Choose a commit from the current branch before reverting".to_owned()
+            })?;
+            let parents = git(root, &["show", "-s", "--format=%P", commit])?
+                .split_whitespace()
+                .count();
+            if (parents > 1 && mainline.is_none())
+                || mainline.is_some_and(|n| parents < 2 || n == 0 || n > parents)
+            {
+                return Err("Choose which side of this merge to keep before reverting".into());
+            }
+            (
+                format!(
+                    "Add a commit reversing {}. Existing history is kept and nothing will be pushed",
+                    &commit[..7]
+                ),
+                String::new(),
+            )
+        }
+
         Kind::Undo => {
             crate::collaboration::require_idle(root)?;
             let head = frozen
@@ -714,30 +808,53 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
                 ),
             )
         }
-        Kind::MoveToBranch { name } => {
+        Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. } => {
             git::validate_branch(root, name)?;
             if git::resolve(root, &format!("refs/heads/{name}")).is_ok() {
                 return Err("This branch already exists. Choose a new branch name".into());
             }
-            let upstream=git(root,&["rev-parse","--symbolic-full-name","@{upstream}"]).map_err(|_|"Link this branch to its remote before moving existing commits. To continue without moving them, use New branch".to_owned())?;
-            let upstream = upstream.trim().to_owned();
-            let base = git::resolve(root, &upstream)?;
             let head = frozen
                 .head
                 .as_ref()
-                .ok_or("Create a first commit before moving commits to a new branch")?;
-            git(root,&["merge-base","--is-ancestor",&base,head]).map_err(|_|"The remote branch has diverged. Compare and update it before moving these commits".to_owned())?;
-            let ids: Vec<_> = git(root, &["rev-list", &format!("{base}..{head}")])?
-                .lines()
-                .map(str::to_owned)
-                .collect();
+                .ok_or("Create a first commit before moving commits")?;
+            let ids = if let Kind::MoveCommits { count, .. } = &kind {
+                let ids = history::linear_tip(root, *count)?;
+                move_base = git::resolve(root, &format!("HEAD~{count}")).ok();
+                if let Some(base) = &move_base {
+                    watched.push((format!("HEAD~{count}"), base.clone()));
+                }
+                ids
+            } else {
+                let upstream=git(root,&["rev-parse","--symbolic-full-name","@{upstream}"]).map_err(|_|"Link this branch to its remote, or choose a specific number of commits to move".to_owned())?;
+                let upstream = upstream.trim().to_owned();
+                let base = git::resolve(root, &upstream)?;
+                git(root, &["merge-base", "--is-ancestor", &base, head]).map_err(|_| {
+                    "The remote branch has diverged. Compare and update it first".to_owned()
+                })?;
+                let ids = git(root, &["rev-list", &format!("{base}..{head}")])?
+                    .lines()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>();
+                move_base = Some(base.clone());
+                watched.push((upstream, base));
+                ids
+            };
+            if ids.is_empty() {
+                return Err("There are no unpublished commits to move".into());
+            }
             unpublished(root, &ids)?;
-            watched.push((upstream, base));
             (
                 format!(
-                    "Move {} unpublished commits to {name} and return {} to its remote tip. Included and working changes follow the new branch",
+                    "Move {} unpublished commits to {name}. {} Included and working changes follow the new branch",
                     ids.len(),
-                    frozen.branch
+                    if move_base.is_some() {
+                        format!("{} returns to the reviewed starting commit.", frozen.branch)
+                    } else {
+                        format!(
+                            "{} has no earlier commits, so its branch name is removed.",
+                            frozen.branch
+                        )
+                    }
                 ),
                 format!(
                     "git switch -c {name:?}\ngit update-ref refs/heads/{} <reviewed remote tip> <reviewed old tip>",
@@ -865,7 +982,10 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
             )
         }
     };
-    let start = if matches!(kind, Kind::Merge { .. } | Kind::CherryPick { .. }) {
+    let start = if matches!(
+        kind,
+        Kind::Merge { .. } | Kind::CherryPick { .. } | Kind::Revert { .. }
+    ) {
         watched
             .first()
             .map(|(_, id)| id.clone())
@@ -915,6 +1035,7 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
         fingerprint: frozen,
         watched,
         commit_plan,
+        move_base,
     };
     review.command = learning_command(root, &review)?;
     if start.is_some() {
@@ -946,15 +1067,21 @@ pub fn preview(root: &Path, mut kind: Kind) -> Result<Preview> {
                 .unwrap_or(0)
                     + 1
             }
-            Kind::CherryPick { .. } => 1,
+            Kind::CherryPick { .. } | Kind::Revert { .. } => 1,
             _ => 0,
         };
-        if matches!(review.kind, Kind::Merge { .. } | Kind::CherryPick { .. }) {
+        if matches!(
+            review.kind,
+            Kind::Merge { .. } | Kind::CherryPick { .. } | Kind::Revert { .. }
+        ) {
             review
                 .summary
                 .push_str(" This will pause for you to resolve the listed files");
         }
-        if !matches!(review.kind, Kind::Merge { .. } | Kind::CherryPick { .. }) {
+        if !matches!(
+            review.kind,
+            Kind::Merge { .. } | Kind::CherryPick { .. } | Kind::Revert { .. }
+        ) {
             review.blocked = Some(
                 "This rewrite conflicts. Resolve its dependencies before changing the order".into(),
             );
@@ -1054,6 +1181,24 @@ pub fn apply(root: &Path, review: &Preview) -> Result<String> {
     }
     let output = (|| -> Result<String> {
         match &review.kind {
+            Kind::RenameBranch { name } | Kind::BranchFrom { name, .. } => {
+                if git::resolve(root, &format!("refs/heads/{name}")).is_ok() {
+                    return Err(
+                        "The branch name was taken after this preview. Choose another name".into(),
+                    );
+                }
+                if let Kind::BranchFrom { commit, .. } = &review.kind {
+                    git(root, &["branch", "--", name, commit])
+                } else {
+                    git(
+                        root,
+                        &["branch", "-m", "--", &review.fingerprint.branch, name],
+                    )
+                }
+            }
+            Kind::Revert { commit, mainline } => {
+                crate::collaboration::revert(root, commit, *mainline)
+            }
             Kind::Undo => history::run_reviewed(
                 root,
                 &history::Action::Undo,
@@ -1094,20 +1239,33 @@ pub fn apply(root: &Path, review: &Preview) -> Result<String> {
                     git(root, &["cherry-pick", id])
                 }
             }
-            Kind::MoveToBranch { name } => {
+            Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. } => {
                 if git::resolve(root, &format!("refs/heads/{name}")).is_ok() {
                     return Err("The new branch name was taken. Choose another name".into());
                 }
                 git(root, &["switch", "-c", name])?;
-                git(
-                    root,
-                    &[
-                        "update-ref",
-                        &format!("refs/heads/{}", review.fingerprint.branch),
-                        &review.watched[0].1,
-                        review.fingerprint.head.as_deref().unwrap_or(""),
-                    ],
-                )
+                let original = format!("refs/heads/{}", review.fingerprint.branch);
+                if let Some(base) = &review.move_base {
+                    git(
+                        root,
+                        &[
+                            "update-ref",
+                            &original,
+                            base,
+                            review.fingerprint.head.as_deref().unwrap_or(""),
+                        ],
+                    )
+                } else {
+                    git(
+                        root,
+                        &[
+                            "update-ref",
+                            "-d",
+                            &original,
+                            review.fingerprint.head.as_deref().unwrap_or(""),
+                        ],
+                    )
+                }
             }
             Kind::SquashRange { count, message } => history::run_reviewed(
                 root,

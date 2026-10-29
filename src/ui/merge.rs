@@ -50,7 +50,9 @@ impl Branchroom {
             surface().show(ui,|ui|{
                 ui.label(RichText::new("Keep up to date with main").strong());
                 subtitle(ui,&format!("Compare with {}. Updating from this branch can be done in advanced operations.",repo.base));
-                ui.menu_button("Advanced branch operations",|ui|{if ui.add_enabled(writable&&self.receiver.is_none(),egui::Button::new("Update current branch from comparison branch…")).clicked(){self.propose_update(&repo.branch);ui.close();}});
+                if self.settings.advanced_mode {
+                    ui.menu_button("Advanced branch operations",|ui|{if ui.add_enabled(writable&&self.receiver.is_none(),egui::Button::new("Update current branch from comparison branch…")).clicked(){self.propose_update(&repo.branch);ui.close();}});
+                }
                 if ui.button("Choose comparison branch").clicked(){self.page=Page::Branches;}
             });
             if !self.detail.is_empty()&&self.detail_page==Page::Merge{

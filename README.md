@@ -1,6 +1,6 @@
 # Branchroom
 
-A native Rust Git workspace for Windows, with branch history, pull requests, and independent project snapshots. Version **0.1.0-rc.1** is a release candidate. The [production audit](docs/PRODUCTION-AUDIT.md) records what was tested, what changed, and the remaining release gates. The [migration matrix](docs/GITHUB-DESKTOP-PARITY.md) distinguishes dedicated workflows from command-runner coverage and missing features.
+A native, graph-first Git desktop client for Windows, with reviewed actions, pull requests and a Time Machine for local recovery. Version **0.1.0-rc.1** is a release candidate. The [final UI and release review](docs/FINAL-UI-REVIEW-2026-10-29.md) records the current verification and release boundary. The [production audit](docs/PRODUCTION-AUDIT.md) retains earlier hardening results. The [migration matrix](docs/GITHUB-DESKTOP-PARITY.md) distinguishes dedicated workflows from command-runner coverage and missing features.
 
 ## Run on Windows
 
@@ -47,12 +47,12 @@ The executable is unsigned. A signed installer, auto-updater, native screen-read
 | --- | --- |
 | Current branch, in the top bar | Search branches on this PC and last-fetched remote branches; reuse tracking branches or create one; carry or stash changes before switching |
 | Changes | Filter/tree/list files; stage files, hunks, or lines; aligned split/unified diffs; whitespace/full context; image comparison; commit, amend, co-authors; local commit exclusions |
-| History | Current-branch-only parent graph/list; search and pagination; inspect changed files; open an exact commit in a separate IDE worktree; revert, cherry-pick, branch, tag |
-| Snapshots | Named captures in a source tree; compare A/B; independent worktrees and IDEs; promote to a branch; remove and restore captures |
+| Graph | Commits, Branch map and Compare share selection; virtualized repository history; automatic changed-file inspection; drag actions with previews; exact-version IDE access; revert, cherry-pick, rename, branch and tag |
+| Time Machine | One timeline of actions, commits, safety points, shelved work and discarded files; restore previews; local Undo/Redo; create a branch or open a saved version in an independent IDE workspace |
 | Pull requests | Browse and inspect, checks/diff, independent IDE review; create draft/ready PRs with templates, reviewer logins, labels; comment/approve/request changes; ready/close/reopen; merge/squash/rebase after review |
 | Merge and branch map | Source/destination preview; fetch and merge baseline updates; ahead/behind/diverged state and shared ancestors; create/rename/delete branches |
-| Compare & recovery | Branch/commit comparisons; undo/reset/squash/reorder restricted unpublished history; saved checkpoints; recover discarded working files |
-| Conflicts and stashes | Base/current/incoming/result editor; stage a checked resolution; continue/abort/skip operations; stash inspect/apply/pop/drop |
+| Compare | Visual branch/commit divergence, unique commits and changed files; Advanced preserves the raw comparison and history forms |
+| Conflicts and shelved work | Current/incoming/result editor with base details; checked resolution; continue/abort/skip; inline shelved diffs with Apply, Apply and keep, and Delete |
 | Repositories | Clone/init; remotes; publish/push/pull/fetch; clean worktree creation/removal; default or project-specific IDE |
 | Command center | Reviewed noninteractive Git/gh arguments, reflog, blame, tags, submodule and maintenance actions |
 | Settings | Density, zoom, auto-refresh, project baseline, default/project/custom IDEs, tool discovery, version diagnostics |

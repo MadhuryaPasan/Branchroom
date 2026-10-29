@@ -6,7 +6,7 @@ fn screen(page: Page, selected: bool) -> egui_kittest::Harness<'static, Branchro
         if page==Page::Conflicts{app.preview_state=6;app.load_preview_state();}
         app.page=page;
         if selected&&page==Page::Snapshots{app.selected_snapshot=app.repo.as_ref().unwrap().snapshots[0].reference.clone();}
-        if selected&&page==Page::Github{app.pr_tab=1;}
+        if selected&&page==Page::Github{app.pr_tab=3;}
         if selected&&page==Page::Changes{
             app.selected_path="src/cache.rs".into();app.diff_refresh=false;
             app.file_patch=Some(std::sync::Arc::new(branchroom::diff::Patch::parse("diff --git a/src/cache.rs b/src/cache.rs\n--- a/src/cache.rs\n+++ b/src/cache.rs\n@@ -1 +1 @@\n-const SIZE: usize = 128;\n+const SIZE: usize = 256;\n")));
@@ -115,7 +115,7 @@ fn render_audit_screens() {
         .unwrap();
     let mut harness = screen(Page::Github, false);
     harness.state_mut().pr_details = Some(review_fixture());
-    harness.state_mut().pr_tab = 2;
+    harness.state_mut().pr_tab = 4;
     harness.run_steps(3);
     harness
         .render()
@@ -184,16 +184,65 @@ fn screens_survive_minimum_size_and_two_hundred_percent_zoom() {
     }
 }
 
+#[test]
+fn clean_changes_collapse_to_status_and_next_actions() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, false);
+    harness.state_mut().preview_state = 1;
+    harness.state_mut().load_preview_state();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Working tree is clean").is_some());
+    assert!(harness.query_by_label("Create pull request").is_some());
+    assert!(harness.query_by_label("Include all files").is_none());
+    harness.check_accessibility();
+}
+
+#[test]
+fn pull_request_creation_has_branch_preview_and_four_work_tabs() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Github, true);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Open").is_some());
+    assert!(harness.query_by_label("Mine").is_some());
+    assert!(harness.query_by_label("Review requested").is_some());
+    assert!(harness.query_by_label("Create").is_some());
+    assert!(
+        harness
+            .query_by_label("Changes in this pull request")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Pull request preview").is_some());
+    assert!(harness.query_by_label("Base branch").is_some());
+    assert!(harness.query_by_label("Compare branch").is_some());
+    assert!(
+        harness
+            .query_by_label("Not created yet · review these details before creating it.")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("Publish compare branch automatically")
+            .is_some()
+    );
+    harness.check_accessibility();
+}
+
 fn review_fixture() -> branchroom::github::PullRequestDetails {
     branchroom::github::PullRequestDetails{number:42,title:"Keep notes available offline".into(),body:"Cache recent notes so they remain available during a network outage.\n\nTested with a disconnected account.".into(),url:"https://example.invalid/pull/42".into(),state:"OPEN".into(),head_ref_name:"feature/offline".into(),base_ref_name:"main".into(),head_ref_oid:"a".repeat(40),merge_state_status:"CLEAN".into(),changed_files:3,additions:42,deletions:6,..Default::default()}
 }
 #[test]
 fn review_and_image_controls_have_names() {
+    use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::Github, false);
     harness.state_mut().pr_details = Some(review_fixture());
-    harness.state_mut().pr_tab = 2;
+    harness.state_mut().pr_tab = 4;
     harness.run_steps(3);
     harness.check_accessibility();
+    assert!(
+        harness
+            .query_by_label("Compare: feature/offline · Base: main · 3 changed files · +42 / -6")
+            .is_some()
+    );
     let mut harness = screen(Page::Changes, true);
     harness.state_mut().selected_path = "image.png".into();
     harness.state_mut().file_patch = Some(std::sync::Arc::new(branchroom::diff::Patch::parse(
@@ -679,6 +728,110 @@ fn commit_inspector_keeps_actions_visible_and_metadata_available() {
 }
 
 #[test]
+fn commit_inspector_ignores_file_results_for_a_previously_selected_commit() {
+    let mut harness = screen(Page::History, false);
+    let commits = harness.state().repo.as_ref().unwrap().commits.clone();
+    let stale_commit = commits[0].id.clone();
+    let selected_commit = commits[1].id.clone();
+    harness.state_mut().selected_commit = selected_commit;
+    harness.state_mut().commit_files_for = String::new();
+    harness.state_mut().commit_files_requested = stale_commit.clone();
+    let (tx, rx) = mpsc::channel();
+    harness.state_mut().receiver = Some(rx);
+    tx.send(Completed {
+        output: Ok(String::new()),
+        state: None,
+        detail: false,
+        open: None,
+        data: JobData::Files {
+            commit: stale_commit,
+            files: vec![CommitFile {
+                path: "stale.txt".into(),
+                added: "1".into(),
+                removed: "0".into(),
+            }],
+        },
+    })
+    .unwrap();
+    harness.run_steps(2);
+    assert!(harness.state().commit_files.is_empty());
+    assert_ne!(
+        harness.state().commit_files_for,
+        harness.state().selected_commit
+    );
+}
+
+#[test]
+fn compact_commit_inspector_is_docked_below_history_and_stays_put_on_hover() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.set_size(egui::vec2(700., 600.));
+    harness.run_steps(3);
+    let initial_panel_header = harness.get_by_label("Commit details").rect();
+    let commits = harness.state().repo.as_ref().unwrap().commits.clone();
+    assert!(harness.query_by_label("Commit inspector").is_none());
+
+    for commit in commits.iter().take(3) {
+        let row = harness
+            .get_by_label(&format!(
+                "{} — {} — {}",
+                commit.subject, commit.author, commit.date
+            ))
+            .rect();
+        harness.hover_at(row.center());
+        harness.run_steps(2);
+        assert_eq!(
+            harness.get_by_label("Commit details").rect(),
+            initial_panel_header
+        );
+    }
+}
+
+#[test]
+fn compact_commit_inspector_leaves_history_visible_at_high_zoom() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+
+    let graph = harness.get_by_label("Graph").rect();
+    let inspector = harness.get_by_label("Commit details").rect();
+    assert!(
+        graph.bottom() < inspector.top(),
+        "graph={graph:?}, inspector={inspector:?}"
+    );
+    assert!(
+        inspector.bottom() < harness.ctx.content_rect().bottom(),
+        "graph={graph:?}, inspector={inspector:?}, screen={:?}",
+        harness.ctx.content_rect()
+    );
+}
+
+#[test]
+fn history_graph_respects_the_docked_inspector_width() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.set_size(egui::vec2(1200., 820.));
+    harness.run_steps(3);
+
+    let repo = harness.state().repo.as_ref().unwrap();
+    let commit = &repo.commits[0];
+    let history_row = harness
+        .get_by_label(&format!(
+            "{} — {} — {}",
+            commit.subject, commit.author, commit.date
+        ))
+        .rect();
+    let inspector = harness.get_by_label("Commit details").rect();
+    assert!(
+        history_row.right() <= inspector.left(),
+        "History content overlaps the docked inspector: row={history_row:?}, inspector={inspector:?}"
+    );
+}
+
+#[test]
 fn repository_and_branch_pickers_keep_navigation_actions() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::History, false);
@@ -710,6 +863,7 @@ fn compact_branch_map_keeps_tree_layout_and_sync_accessible() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::Branches, false);
     harness.ctx.set_zoom_factor(2.);
+    harness.state_mut().inspector_open = false;
     harness.run_steps(2);
     harness.set_size(egui::vec2(530., 350.));
     harness.run_steps(3);
@@ -723,9 +877,38 @@ fn compact_branch_map_keeps_tree_layout_and_sync_accessible() {
     assert!(
         harness
             .query_by_label("Advanced branch operations")
+            .is_none()
+    );
+    harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label("Advanced branch operations")
             .is_some()
     );
     harness.check_accessibility();
+}
+
+#[test]
+fn branch_map_update_action_fits_and_advanced_menu_respects_mode() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Branches, false);
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Update branch").is_some());
+    harness.get_by_label("Actions for feature/offline").click();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label("Advanced actions for feature/offline")
+            .is_none()
+    );
+    harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label("Advanced actions for feature/offline")
+            .is_some()
+    );
 }
 
 #[test]
@@ -742,6 +925,8 @@ fn github_setup_exposes_next_steps_and_missing_cli_feedback() {
     assert!(harness.query_by_label("Check installation again").is_some());
     harness.state_mut().github_available = true;
     harness.run_steps(3);
+    harness.get_by_label("GitHub · Connected").click();
+    harness.run_steps(2);
     assert!(harness.query_by_label("Sign in to GitHub…").is_some());
     assert!(harness.query_by_label("Check account").is_some());
     harness.check_accessibility();
@@ -778,9 +963,194 @@ fn command_bar_opens_with_shortcut_and_filters_actions() {
     harness.run_steps(2);
     assert!(harness.query_by_label("Open settings").is_some());
     assert!(harness.query_by_label("Open Time Machine").is_none());
+    harness.state_mut().command_bar_query = "I committed to the wrong branch".into();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label("I committed to the wrong branch")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Show Git command").is_some());
+    harness.state_mut().command_bar_query = "advanced commands".into();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Advanced commands").is_none());
+    harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Advanced commands").is_some());
+    harness.state_mut().command_bar_query = "undo last commit".into();
+    harness.run_steps(2);
+    harness.get_by_label("Undo the last commit safely").click();
+    harness.run_steps(2);
+    assert!(
+        matches!(
+            harness.state().manipulation.draft,
+            Some(branchroom::operation::Kind::Undo)
+        ),
+        "draft={:?}, open={}, output={}",
+        harness.state().manipulation.draft,
+        harness.state().command_bar_open,
+        harness.state().output
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    harness.state_mut().command_bar_open = true;
+    harness.state_mut().command_bar_query = "settings".into();
+    harness.run_steps(2);
     harness.get_by_label("Open settings").click();
     harness.run_steps(2);
     assert_eq!(harness.state().page, Page::Settings);
+}
+
+#[test]
+fn wrong_branch_fix_opens_a_reviewed_move_to_branch_action() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().command_bar_open = true;
+    harness.state_mut().command_bar_query = "wrong branch".into();
+    harness.run_steps(2);
+    harness
+        .get_by_label("I committed to the wrong branch")
+        .click();
+    harness.run_steps(2);
+    assert!(matches!(
+        harness.state().manipulation.draft,
+        Some(branchroom::operation::Kind::MoveCommits { count: 1, .. })
+    ));
+    assert!(!harness.state().command_bar_open);
+}
+
+#[test]
+fn split_commit_fix_previews_parent_reset_and_opens_changes() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().command_bar_open = true;
+    harness.state_mut().command_bar_query = "split a commit".into();
+    harness.run_steps(2);
+    harness.get_by_label("Split a commit").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().page, Page::Changes);
+    assert!(matches!(
+        harness.state().manipulation.draft,
+        Some(branchroom::operation::Kind::Reset { .. })
+    ));
+}
+
+#[test]
+fn branch_map_shows_worktree_desks_on_their_branch_nodes() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Branches, false);
+    let mut repo = harness.state().repo.as_ref().unwrap().as_ref().clone();
+    let (branch, head) = repo
+        .branches
+        .iter()
+        .find(|branch| !branch.remote)
+        .map(|branch| (branch.name.clone(), branch.id.clone()))
+        .unwrap();
+    repo.workspaces.push(git::Workspace {
+        path: std::path::PathBuf::from("C:/tmp/cache-desk"),
+        head,
+        branch,
+        detached: false,
+    });
+    let branch = repo
+        .workspaces
+        .last()
+        .map(|workspace| workspace.branch.clone())
+        .unwrap();
+    *std::sync::Arc::make_mut(harness.state_mut().repo.as_mut().unwrap()) = repo;
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label(&format!("Open worktree folder cache-desk for {branch}"))
+            .is_some()
+    );
+}
+
+#[test]
+fn history_branch_strip_omits_worktree_controls_and_selection_stays_click_driven() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    let mut repo = harness.state().repo.as_ref().unwrap().as_ref().clone();
+    let (branch, head) = repo
+        .branches
+        .iter()
+        .find(|branch| !branch.remote)
+        .map(|branch| (branch.name.clone(), branch.id.clone()))
+        .unwrap();
+    repo.workspaces.push(git::Workspace {
+        path: std::path::PathBuf::from("C:/tmp/cache-desk"),
+        head,
+        branch: branch.clone(),
+        detached: false,
+    });
+    *std::sync::Arc::make_mut(harness.state_mut().repo.as_mut().unwrap()) = repo.clone();
+    let selected = repo.commits[0].clone();
+    harness.state_mut().selected_commit = selected.id.clone();
+    harness.run_steps(3);
+
+    assert!(harness.query_by_label(&branch).is_some());
+    assert!(harness.query_by_label("Worktree folders").is_none());
+    assert!(harness.query_by_label("Folder").is_none());
+
+    assert!(
+        harness
+            .query_by_label(&format!(
+                "{} — {} — {}",
+                selected.subject, selected.author, selected.date
+            ))
+            .is_some()
+    );
+    let other = &repo.commits[1];
+    let other_row = harness
+        .get_by_label(&format!(
+            "{} — {} — {}",
+            other.subject, other.author, other.date
+        ))
+        .rect()
+        .center();
+    harness.hover_at(other_row);
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_commit, selected.id);
+}
+
+#[test]
+fn commit_patch_preview_keeps_subject_and_sha_in_its_title() {
+    let mut harness = screen(Page::History, false);
+    let commit = harness
+        .state()
+        .repo
+        .as_ref()
+        .unwrap()
+        .commits
+        .first()
+        .unwrap()
+        .clone();
+    let ctx = harness.ctx.clone();
+    harness.state_mut().view_commit(&commit.id, &ctx);
+    assert!(harness.state().detail_title.contains(&commit.subject));
+    assert!(
+        harness
+            .state()
+            .detail_title
+            .contains(&commit.id[..8.min(commit.id.len())])
+    );
+}
+
+#[test]
+fn compare_screen_names_each_branch_and_commit_direction() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Compare, false);
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Compare branches").is_some());
+    assert!(harness.query_by_label("Base branch").is_some());
+    assert!(harness.query_by_label("Compare with").is_some());
+    assert!(harness.query_by_label("Only in main").is_some());
+    assert!(harness.query_by_label("Only in HEAD").is_some());
+    assert!(
+        harness
+            .query_by_label("Files changed between branches")
+            .is_some()
+    );
 }
 
 #[test]
@@ -872,9 +1242,14 @@ fn patch_preview_can_switch_between_formatted_and_raw() {
     harness.state_mut().detail_page = Page::History;
     harness.state_mut().detail_open = true;
     harness.run_steps(3);
-    harness.get_by_label("Show raw patch").click();
+    let raw_patch = harness.get_by_label("Show raw patch");
+    let raw_patch_rect = raw_patch.rect();
+    raw_patch.click();
     harness.run_steps(2);
-    assert!(harness.state().patch_raw);
+    assert!(
+        harness.state().patch_raw,
+        "Raw-patch control did not activate at {raw_patch_rect:?}"
+    );
     assert!(harness.query_by_label("Show formatted patch").is_some());
     harness.get_by_label("Show formatted patch").click();
     harness.run_steps(2);
@@ -920,7 +1295,7 @@ fn branch_pair_has_one_accessible_card_and_keeps_remote_actions() {
     harness.run_steps(3);
     assert!(harness.query_by_label("main  · current, This computer and remote match, Remote: origin/main · as of last fetch").is_some());
     assert!(harness.query_by_label("origin/main, This branch is only on the remote, Switch to it to create a branch on this computer").is_none());
-    harness.get_by_label("Actions").click();
+    harness.get_by_label("Actions for main").click();
     harness.run_steps(2);
     harness.get_by_label("Remote branch: origin/main").click();
     harness.run_steps(2);
@@ -1420,6 +1795,16 @@ fn time_machine_replaces_snapshot_modes_and_keeps_recovery_actions_named() {
             "Old snapshot UI remains: {old}"
         );
     }
+    assert!(harness.query_by_label("Advanced").is_none());
+    harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    harness.get_by_label("Advanced").click();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label("Open a saved version in a separate workspace")
+            .is_some()
+    );
 }
 #[test]
 fn shelved_work_has_inline_diff_and_explicit_actions_at_narrow_width() {
@@ -1565,4 +1950,243 @@ fn global_undo_shortcut_does_not_consume_text_editor_undo() {
     harness.run_steps(2);
     assert_eq!(harness.state().output, output);
     assert!(harness.state().receiver.is_none());
+}
+
+#[test]
+fn final_inspector_actions_stay_aligned_for_short_long_and_merge_commits() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.run_steps(3);
+    let ids = harness
+        .state()
+        .repo
+        .as_ref()
+        .unwrap()
+        .commits
+        .iter()
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    let before = harness.get_by_label("View patch").rect();
+    for (index, id) in ids.iter().enumerate() {
+        if index == 1 {
+            let repo = std::sync::Arc::make_mut(harness.state_mut().repo.as_mut().unwrap());
+            repo.commits[1].subject="A long commit message explaining a change in considerable detail with many words and a_second_very_long_identifier_to_exercise_wrapping_in_the_inspector".repeat(3);
+        }
+        harness.state_mut().selected_commit = id.clone();
+        harness.run_steps(3);
+        assert_eq!(
+            harness.get_by_label("View patch").rect(),
+            before,
+            "Actions moved for commit {index}"
+        );
+        assert!(
+            harness.get_by_label("Commit actions…").rect().right()
+                <= harness.ctx.content_rect().right()
+        );
+    }
+}
+#[test]
+fn final_compact_details_expand_and_return_without_changing_selection() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    let selected = harness.state().selected_commit.clone();
+    let expand = harness.get_by_label("Expand details").rect();
+    assert!(
+        expand.bottom() <= 306.,
+        "Compact details control is clipped: {expand:?}"
+    );
+    harness.get_by_label("Expand details").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("View patch").is_some());
+    harness.get_by_label("Back to graph").click();
+    harness.run_steps(3);
+    assert_eq!(harness.state().selected_commit, selected);
+}
+#[test]
+fn final_command_intent_keeps_the_requested_commit_count_and_branch_name() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().command_bar_open = true;
+    harness.state_mut().command_bar_query =
+        "move last 2 commits to new branch feature/Offline".into();
+    harness.run_steps(3);
+    harness
+        .get_by_label("Move unpublished commits to a new branch")
+        .click();
+    harness.run_steps(2);
+    assert!(
+        matches!(&harness.state().manipulation.draft,Some(branchroom::operation::Kind::MoveCommits{name,count:2}) if name=="feature/Offline")
+    );
+}
+#[test]
+#[ignore = "Exports the release UI matrix in both themes and compact layouts"]
+fn render_release_candidate() {
+    std::fs::create_dir_all("target/qa/release").unwrap();
+    for page in [
+        Page::History,
+        Page::Changes,
+        Page::Branches,
+        Page::Compare,
+        Page::Snapshots,
+        Page::Github,
+        Page::Conflicts,
+        Page::Remotes,
+        Page::Settings,
+    ] {
+        for (light, width, height) in [
+            (false, 1320., 820.),
+            (true, 1320., 820.),
+            (false, 700., 600.),
+            (false, 530., 350.),
+        ] {
+            let mut harness = screen(page, true);
+            harness.state_mut().settings.light_theme = light;
+            theme::install(&harness.ctx, light);
+            if width == 530. {
+                harness.ctx.set_zoom_factor(2.);
+                harness.run_steps(2);
+            }
+            harness.set_size(egui::vec2(width, height));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("target/qa/release/{page:?}-{light}-{width}.png"))
+                .unwrap();
+        }
+    }
+    let mut harness = screen(Page::History, true);
+    let ids = harness
+        .state()
+        .repo
+        .as_ref()
+        .unwrap()
+        .commits
+        .iter()
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    for (index, id) in ids.into_iter().enumerate() {
+        harness.state_mut().selected_commit = id;
+        harness.run_steps(3);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("target/qa/release/inspector-{index}.png"))
+            .unwrap();
+    }
+}
+
+#[test]
+fn final_merge_inspector_lists_files_changed_from_the_first_parent() {
+    let fixture = GraphActionFixture::new(false);
+    git::git(&fixture.root, &["merge", "--no-edit", "incoming"]).unwrap();
+    let head = git::resolve(&fixture.root, "HEAD").unwrap();
+    let files = super::inspector::files(&fixture.root, &head).unwrap();
+    assert!(files.iter().any(|f| f.path == "incoming.txt"));
+    assert!(!files.iter().any(|f| f.path == "main.txt"));
+}
+
+#[test]
+#[ignore = "Re-export the final inspector layout after the compact-header correction"]
+fn render_final_inspector_fix() {
+    std::fs::create_dir_all("target/qa/release").unwrap();
+    for (light, width, height) in [
+        (false, 1320., 820.),
+        (true, 1320., 820.),
+        (false, 700., 600.),
+        (false, 530., 350.),
+    ] {
+        let mut harness = screen(Page::History, true);
+        theme::install(&harness.ctx, light);
+        harness.state_mut().settings.light_theme = light;
+        if width == 530. {
+            harness.ctx.set_zoom_factor(2.);
+            harness.run_steps(2);
+        }
+        harness.set_size(egui::vec2(width, height));
+        harness.run_steps(3);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("target/qa/release/History-{light}-{width}.png"))
+            .unwrap();
+        if width == 530. {
+            harness.state_mut().inspector.expanded = true;
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save("target/qa/release/History-expanded-530.png")
+                .unwrap();
+        }
+    }
+    for page in [Page::Merge, Page::Tools] {
+        for (width, height) in [(1320., 820.), (530., 350.)] {
+            let mut harness = screen(page, true);
+            harness.state_mut().settings.advanced_mode = true;
+            if width == 530. {
+                harness.ctx.set_zoom_factor(2.);
+                harness.run_steps(2);
+            }
+            harness.set_size(egui::vec2(width, height));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("target/qa/release/{page:?}-final-{width}.png"))
+                .unwrap();
+        }
+    }
+    for (width, height) in [(1320., 820.), (530., 350.)] {
+        let mut harness = screen(Page::Github, false);
+        if width == 530. {
+            harness.ctx.set_zoom_factor(2.);
+            harness.run_steps(2);
+        }
+        harness.set_size(egui::vec2(width, height));
+        harness.run_steps(3);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("target/qa/release/PR-list-final-{width}.png"))
+            .unwrap();
+        let mut harness = screen(Page::Changes, false);
+        harness.state_mut().error = true;
+        harness.state_mut().output =
+            "git exited with exit code: 128\nfatal: Could not resolve host".into();
+        if width == 530. {
+            harness.ctx.set_zoom_factor(2.);
+            harness.run_steps(2);
+        }
+        harness.set_size(egui::vec2(width, height));
+        harness.run_steps(3);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("target/qa/release/Error-final-{width}.png"))
+            .unwrap();
+    }
+    let mut harness = screen(Page::History, true);
+    let ids = harness
+        .state()
+        .repo
+        .as_ref()
+        .unwrap()
+        .commits
+        .iter()
+        .map(|c| c.id.clone())
+        .collect::<Vec<_>>();
+    for (index, id) in ids.into_iter().enumerate() {
+        harness.state_mut().selected_commit = id;
+        harness.run_steps(3);
+        harness
+            .render()
+            .unwrap()
+            .save(format!("target/qa/release/inspector-{index}.png"))
+            .unwrap();
+    }
 }

@@ -18,7 +18,7 @@ impl Branchroom {
         subtitle(
             ui,
             &format!(
-                "{} → {} · {} changed files · +{} / -{}",
+                "Compare: {} · Base: {} · {} changed files · +{} / -{}",
                 pr.head_ref_name, pr.base_ref_name, pr.changed_files, pr.additions, pr.deletions
             ),
         );
@@ -75,7 +75,7 @@ impl Branchroom {
                     if pr.state=="OPEN"&&!pr.is_draft{
                         ui.menu_button("Merge pull request…",|ui|{
                             for(method,label)in[(MergeMethod::Merge,"Create a merge commit"),(MergeMethod::Squash,"Squash and merge"),(MergeMethod::Rebase,"Rebase and merge")]{
-                                if ui.button(label).clicked(){self.pending=Some(Pending{title:format!("Merge pull request #{}",pr.number),explanation:format!("{label}: {} → {} on GitHub. This changes the remote repository. GitHub will refuse the request if the PR head changed or required rules are unmet. Local branches and files are not deleted.",pr.head_ref_name,pr.base_ref_name),task:Task::GithubAction(Action::Merge{number:pr.number,head:pr.head_ref_oid.clone(),method})});ui.close();}
+                                if ui.button(label).clicked(){self.pending=Some(Pending{title:format!("Merge pull request #{}",pr.number),explanation:format!("{label}: compare branch {} into base branch {} on GitHub. This changes the remote repository. GitHub will refuse the request if the PR head changed or required rules are unmet. Local branches and files are not deleted.",pr.head_ref_name,pr.base_ref_name),task:Task::GithubAction(Action::Merge{number:pr.number,head:pr.head_ref_oid.clone(),method})});ui.close();}
                             }
                         });
                     }

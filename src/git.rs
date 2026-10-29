@@ -45,6 +45,13 @@ pub struct Snapshot {
     pub parents: Vec<String>,
 }
 #[derive(Clone, Debug, Default)]
+pub struct Workspace {
+    pub path: PathBuf,
+    pub head: String,
+    pub branch: String,
+    pub detached: bool,
+}
+#[derive(Clone, Debug, Default)]
 pub struct RepoState {
     pub timeline: Vec<crate::timeline::Item>,
     pub default_branch: Option<String>,
@@ -65,6 +72,7 @@ pub struct RepoState {
     pub stashes: Vec<(String, String)>,
     pub remotes: String,
     pub worktrees: String,
+    pub workspaces: Vec<Workspace>,
     pub tags: Vec<String>,
     pub operation: String,
     pub head: String,
@@ -301,6 +309,8 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
         }
         .to_owned();
     let commit_locks = crate::commit_lock::read(&root)?;
+    let worktrees = git(&root, &["worktree", "list"])?;
+    let workspaces = parse_workspaces(&git(&root, &["worktree", "list", "--porcelain"])?);
     Ok(RepoState {
         timeline: crate::timeline::items(&root, limit)?,
         default_branch: crate::operation::default_branch(&root),
@@ -314,7 +324,8 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
         .unwrap_or_default()
         .into(),
         remotes: git(&root, &["remote", "-v"])?,
-        worktrees: git(&root, &["worktree", "list"])?,
+        worktrees,
+        workspaces,
         tags: git(&root, &["tag", "--list"])?
             .lines()
             .map(str::to_owned)
@@ -334,6 +345,30 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
         stashes,
         operation,
     })
+}
+
+fn parse_workspaces(output: &str) -> Vec<Workspace> {
+    let mut workspaces = Vec::new();
+    let mut workspace = Workspace::default();
+    let mut found_path = false;
+    for line in output.lines().chain(std::iter::once("")) {
+        if line.is_empty() {
+            if found_path {
+                workspaces.push(std::mem::take(&mut workspace));
+                found_path = false;
+            }
+        } else if let Some(path) = line.strip_prefix("worktree ") {
+            workspace.path = PathBuf::from(path);
+            found_path = true;
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            workspace.head = head.into();
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            workspace.branch = branch.strip_prefix("refs/heads/").unwrap_or(branch).into();
+        } else if line == "detached" {
+            workspace.detached = true;
+        }
+    }
+    workspaces
 }
 
 pub fn validate_branch(path: &Path, name: &str) -> Result<()> {
@@ -522,8 +557,57 @@ fn fill_merge_bases(root: &Path, base: &str, branches: &mut [Branch]) -> Result<
     Ok(())
 }
 
+/// Inspect one immutable commit, including commits outside the current history page.
+pub fn commit_details(root: &Path, reference: &str) -> Result<Commit> {
+    let id = resolve(root, reference)?;
+    parse_commits(&git(
+        root,
+        &[
+            "log",
+            "-1",
+            "-z",
+            "--format=%H%x00%P%x00%D%x00%aN%x00%ar%x00%s%x00%aE",
+            &id,
+        ],
+    )?)
+    .into_iter()
+    .next()
+    .ok_or_else(|| {
+        "This commit is no longer available. Refresh the repository and select it again".into()
+    })
+}
+
 #[cfg(test)]
 mod author_tests {
+    #[test]
+    fn worktree_parser_handles_multiple_records_and_detached_heads() {
+        let output = concat!(
+            "worktree C:/projects/main\r\n",
+            "HEAD abc123\r\n",
+            "branch refs/heads/main\r\n",
+            "bare\r\n",
+            "\r\n",
+            "worktree C:/projects/feature desk\r\n",
+            "HEAD def456\r\n",
+            "detached\r\n",
+        );
+        let workspaces = super::parse_workspaces(output);
+        assert_eq!(workspaces.len(), 2);
+        assert_eq!(
+            workspaces[0].path,
+            std::path::PathBuf::from("C:/projects/main")
+        );
+        assert_eq!(workspaces[0].branch, "main");
+        assert!(!workspaces[0].detached);
+        assert_eq!(
+            workspaces[1].path,
+            std::path::PathBuf::from("C:/projects/feature desk")
+        );
+        assert_eq!(workspaces[1].head, "def456");
+        assert!(workspaces[1].branch.is_empty());
+        assert!(workspaces[1].detached);
+    }
+
     #[test]
     fn names_are_canonicalized_by_email_without_merging_distinct_people() {
         let rows = [

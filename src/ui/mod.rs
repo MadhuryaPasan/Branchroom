@@ -2,12 +2,14 @@ mod changes;
 mod collaboration;
 mod compare;
 mod comparison_canvas;
+mod connection;
 mod dialogs;
 mod drafts;
 mod experiments;
 mod graph_context;
 mod history;
 mod images;
+mod inspector;
 mod jobs;
 mod manipulation;
 mod merge;
@@ -145,7 +147,11 @@ enum Task {
         branch: String,
         expected: String,
     },
-    PullRequests,
+    PullRequests(branchroom::collaboration::PullRequestFilter),
+    PullRequestPreview {
+        head: String,
+        base: String,
+    },
     PullRequestDetails(u64),
     CreatePullRequest(branchroom::github::CreateRequest),
     GithubAction(branchroom::github::Action),
@@ -190,6 +196,11 @@ enum JobData {
     CommitReview(branchroom::commit::Plan),
     SnapshotRestored(String),
     PullRequests(Vec<branchroom::collaboration::PullRequest>),
+    PullRequestPreview {
+        key: String,
+        commits: Vec<String>,
+        files: Vec<String>,
+    },
     None,
     Committed,
     GraphReview(Box<branchroom::operation::Preview>),
@@ -273,6 +284,7 @@ pub struct Branchroom {
     repository_filter: String,
     receiver: Option<Receiver<Completed>>,
     busy: String,
+    job_started: Option<Instant>,
     transfer_progress: process::Progress,
     last_refresh: Instant,
     last_fetch: Option<Instant>,
@@ -316,6 +328,7 @@ pub struct Branchroom {
     github_number: String,
     github_available: bool,
     pr_title: String,
+    pr_auto_title: String,
     pr_body: String,
     pr_reviewers: String,
     pr_labels: String,
@@ -327,6 +340,14 @@ pub struct Branchroom {
     pr_tab: usize,
     pull_requests: Vec<branchroom::collaboration::PullRequest>,
     prs_loaded: bool,
+    prs_requested: bool,
+    pr_prefill_branch: String,
+    pr_preview_requested: String,
+    pr_preview_key: String,
+    pr_preview_commits: Vec<String>,
+    pr_preview_files: Vec<String>,
+    pr_publish_remote: String,
+    pr_publish_if_needed: bool,
     review_open: Option<(String, Option<u64>)>,
     review_directory: String,
     review_ide: usize,
@@ -336,6 +357,8 @@ pub struct Branchroom {
     ide_arguments: String,
     graph: std::sync::Arc<Vec<graph::GraphRow>>,
     history_view: history::HistoryView,
+    inspector: inspector::Inspector,
+    connection: connection::Connection,
     graph_context: graph_context::GraphContext,
     manipulation: manipulation::Manipulation,
     activity_open: bool,
@@ -356,7 +379,6 @@ pub struct Branchroom {
     auto_refresh: bool,
     capture_open: bool,
     preview_mode: bool,
-    was_compact: bool,
     file_patch: Option<std::sync::Arc<branchroom::diff::Patch>>,
     image_data: Option<branchroom::image_diff::Comparison>,
     image_view: Option<images::ImageView>,
@@ -428,6 +450,7 @@ impl Branchroom {
             repository_filter: String::new(),
             receiver: None,
             busy: String::new(),
+            job_started: None,
             transfer_progress: Default::default(),
             last_refresh: Instant::now(),
             last_fetch: None,
@@ -473,6 +496,7 @@ impl Branchroom {
             github_number: String::new(),
             github_available: preview_mode || process::find_executable("gh").is_some(),
             pr_title: String::new(),
+            pr_auto_title: String::new(),
             pr_body: String::new(),
             pr_reviewers: String::new(),
             pr_labels: String::new(),
@@ -484,6 +508,14 @@ impl Branchroom {
             pr_tab: 0,
             pull_requests: vec![],
             prs_loaded: false,
+            prs_requested: false,
+            pr_prefill_branch: String::new(),
+            pr_preview_requested: String::new(),
+            pr_preview_key: String::new(),
+            pr_preview_commits: vec![],
+            pr_preview_files: vec![],
+            pr_publish_remote: "origin".into(),
+            pr_publish_if_needed: true,
             review_open: None,
             review_directory: String::new(),
             review_ide: 0,
@@ -493,6 +525,8 @@ impl Branchroom {
             ide_arguments: "[\"{path}\"]".into(),
             graph: Default::default(),
             history_view: Default::default(),
+            inspector: Default::default(),
+            connection: Default::default(),
             graph_context: Default::default(),
             manipulation: Default::default(),
             activity_open: false,
@@ -513,7 +547,6 @@ impl Branchroom {
             auto_refresh,
             capture_open: false,
             preview_mode,
-            was_compact: false,
             file_patch: None,
             image_data: None,
             image_view: None,
@@ -585,9 +618,16 @@ impl Branchroom {
         self.persist_draft();
         self.pull_requests.clear();
         self.prs_loaded = false;
+        self.prs_requested = false;
+        self.pr_prefill_branch.clear();
+        self.pr_preview_requested.clear();
+        self.pr_preview_key.clear();
+        self.pr_preview_commits.clear();
+        self.pr_preview_files.clear();
         self.pr_base.clear();
         self.pr_head.clear();
         self.pr_title.clear();
+        self.pr_auto_title.clear();
         self.pr_body.clear();
         self.pr_details = None;
         self.pr_review.clear();
@@ -610,6 +650,7 @@ impl Branchroom {
         self.selected_hunks.clear();
         self.selected_lines.clear();
         self.commit_files.clear();
+        self.inspector = Default::default();
         self.commit_files_for.clear();
         self.commit_files_requested.clear();
         self.commit_message.clear();
@@ -695,6 +736,7 @@ impl Branchroom {
                 }
             }
             self.receiver = None;
+            self.job_started = None;
             self.cancellation = None;
             self.busy.clear();
             self.last_refresh = Instant::now();
@@ -728,20 +770,23 @@ impl Branchroom {
                         self.pr_review.clear();
                     }
                     self.pr_details = details;
-                    self.pr_tab = if self.pr_details.is_some() { 2 } else { 0 };
+                    self.pr_tab = if self.pr_details.is_some() { 4 } else { 0 };
                     self.prs_loaded = false;
+                    self.prs_requested = false;
                 }
                 JobData::PullRequestDetails(details) => {
                     self.pr_details = Some(details);
-                    self.pr_tab = 2;
+                    self.pr_tab = 4;
                 }
                 JobData::PullRequestCreated => {
                     self.pr_title.clear();
+                    self.pr_auto_title.clear();
                     self.pr_body.clear();
                     self.pr_reviewers.clear();
                     self.pr_labels.clear();
                     self.pr_tab = 0;
                     self.prs_loaded = false;
+                    self.prs_requested = false;
                 }
                 JobData::CommitReview(plan) => {
                     self.pending = Some(Pending {
@@ -773,6 +818,17 @@ impl Branchroom {
                     self.pull_requests = prs;
                     self.prs_loaded = true;
                 }
+                JobData::PullRequestPreview {
+                    key,
+                    commits,
+                    files,
+                } => {
+                    if self.pr_preview_requested == key {
+                        self.pr_preview_key = key;
+                        self.pr_preview_commits = commits;
+                        self.pr_preview_files = files;
+                    }
+                }
                 JobData::Image {
                     path,
                     staged,
@@ -803,8 +859,12 @@ impl Branchroom {
                     }
                 }
                 JobData::Files { commit, files } => {
-                    self.commit_files_for = commit;
-                    self.commit_files = files;
+                    if commit == self.selected_commit {
+                        self.commit_files_for = commit;
+                        self.commit_files = files;
+                    } else {
+                        self.commit_files_requested.clear();
+                    }
                 }
                 JobData::GraphReview(review) => self.accept_graph_review(*review),
                 JobData::ConflictSides {
@@ -868,6 +928,7 @@ impl Branchroom {
                             self.pr_details = None;
                             self.pr_review.clear();
                             self.prs_loaded = false;
+                            self.prs_requested = false;
                             self.github_number.clear();
                             self.selected_path.clear();
                             self.file_patch = None;
@@ -996,12 +1057,18 @@ impl eframe::App for Branchroom {
 }
 
 fn subtitle(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).color(MUTED()));
+    ui.add(egui::Label::new(RichText::new(text).color(MUTED())).wrap());
 }
 fn heading(ui: &mut egui::Ui, title: &str, description: &str) {
-    ui.heading(RichText::new(title).size(24.).strong());
-    subtitle(ui, description);
-    ui.add_space(16.);
+    ui.heading(RichText::new(title).size(TEXT_TITLE).strong());
+    if ui.ctx().content_rect().height() >= 500. {
+        subtitle(ui, description);
+    }
+    ui.add_space(if ui.ctx().content_rect().height() < 500. {
+        4.
+    } else {
+        12.
+    });
 }
 fn code(ui: &mut egui::Ui, text: &str) {
     let lines: Vec<_> = text.lines().collect();

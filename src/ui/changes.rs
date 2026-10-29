@@ -104,7 +104,7 @@ impl Branchroom {
                     });
                 });
                 });
-                if compact {
+                if compact && !repo.changes.is_empty() {
                     ui.selectable_value(&mut self.compact_changes_tab,0,"Files");
                     ui.selectable_value(&mut self.compact_changes_tab,1,"Diff");
                     ui.selectable_value(&mut self.compact_changes_tab,2,"Commit");
@@ -113,6 +113,45 @@ impl Branchroom {
             if !compact {subtitle(ui,"Choose files, hunks, or individual lines to include in your commit.");}
 
         });
+        if repo.changes.is_empty() {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::new().fill(PAPER()).inner_margin(16))
+                .show(ui, |ui| {
+                    ui.heading("Working tree is clean");
+                    subtitle(
+                        ui,
+                        "There are no file changes to stage or commit. Keep moving with your branch.",
+                    );
+                    ui.horizontal_wrapped(|ui| {
+                        if primary(ui, "Create pull request").clicked() {
+                            self.pr_head = repo.branch.clone();
+                            self.pr_tab = 3;
+                            self.page = Page::Github;
+                        }
+                        if ui.button("Open pull requests").clicked() {
+                            self.pr_tab = 0;
+                            self.page = Page::Github;
+                        }
+                        if ui.button("View commit graph").clicked() {
+                            self.page = Page::History;
+                        }
+                    });
+                    ui.add_space(16.);
+                    surface().show(ui, |ui| {
+                        ui.label(RichText::new(format!("Recent commits on {}", repo.branch)).strong());
+                        if repo.branch_commits.is_empty() {
+                            subtitle(ui, "No commits on this branch yet.");
+                        }
+                        for commit in repo.branch_commits.iter().take(3) {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("●").color(ACCENT()));
+                                ui.label(&commit.subject);
+                            });
+                        }
+                    });
+                });
+            return;
+        }
         if compact {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(PAPER()).inner_margin(16))
@@ -156,17 +195,9 @@ impl Branchroom {
                     });
                 self.change_list(ui, ctx, &repo, writable);
             });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
-            if repo.changes.is_empty(){
-                ui.add_space(28.);ui.heading("No local changes");subtitle(ui,"Your working tree is clean. Review a branch or preview your next pull request.");ui.add_space(20.);
-                surface().show(ui,|ui|{ui.label(RichText::new("Review this branch").strong());ui.horizontal_wrapped(|ui|{if primary(ui,"Preview pull request").clicked(){self.pr_head=repo.branch.clone();self.pr_tab=1;self.page=Page::Github;}
-if ui.button("View commit history").clicked(){self.page=Page::History;}
-if ui.button("Browse on GitHub").clicked(){self.read("gh",process::strings(&["browse"]),ctx);}});});
-                ui.add_space(16.);surface().show(ui,|ui|{ui.label(RichText::new("Continue working").strong());ui.horizontal_wrapped(|ui|{if ui.add_enabled(writable,egui::Button::new("Open in IDE")).clicked(){let result=self.settings.open(&repo.root,self.settings.ide_for(&repo.root));self.report(result);}
-if ui.button("Show in Explorer").clicked(){self.report(process::reveal(&repo.root));}
-if ui.add_enabled(writable,egui::Button::new("Open terminal")).clicked(){self.report(process::terminal(&repo.root));}});});
-            }else{self.patch_view(ui,ctx,writable);}
-        });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(PAPER()).inner_margin(16))
+            .show(ui, |ui| self.patch_view(ui, ctx, writable));
     }
 
     fn commit_composer(&mut self, ui: &mut egui::Ui) {
@@ -178,6 +209,10 @@ if ui.add_enabled(writable,egui::Button::new("Open terminal")).clicked(){self.re
                 .desired_width(f32::INFINITY)
                 .hint_text("Describe the change"),
         );
+        ui.label(format!(
+            "{} characters in summary",
+            self.commit_message.chars().count()
+        ));
         ui.label("Description");
         ui.add(
             egui::TextEdit::multiline(&mut self.commit_description)

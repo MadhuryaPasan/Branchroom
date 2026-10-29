@@ -1381,6 +1381,8 @@ fn pull_request_composer_uses_stdin_and_explicit_branches() {
         title: "Literal $(text)".into(),
         body: "Large description\n".repeat(4000),
         draft: true,
+        publish_if_needed: false,
+        publish_remote: "origin".into(),
         reviewers: vec!["reviewer".into()],
         labels: vec!["bug".into()],
     };
@@ -2460,4 +2462,185 @@ fn timeline_failed_action_does_not_claim_external_edits_as_a_completed_undo_step
             .iter()
             .any(|e| e.kind == "Action")
     );
+}
+
+#[test]
+fn final_review_revert_forecasts_conflicts_and_keeps_published_history() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("a.txt", "one\n");
+    f.commit("First");
+    let first = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("a.txt", "two\n");
+    f.commit("Second");
+    let second = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["update-ref", "refs/remotes/origin/main", &second]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Revert {
+            commit: second.clone(),
+            mainline: None,
+        },
+    )
+    .unwrap();
+    assert!(review.conflicts.is_empty());
+    assert!(review.command.contains("revert"));
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "one\n");
+    assert_eq!(git::resolve(&f.0, "HEAD^").unwrap(), second);
+    assert_eq!(
+        git::resolve(&f.0, "refs/remotes/origin/main").unwrap(),
+        second
+    );
+    f.write("a.txt", "Later content that must be resolved\n");
+    f.commit("Later local change");
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let conflict = operation::preview(
+        &f.0,
+        Kind::Revert {
+            commit: first,
+            mainline: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
+    assert_eq!(conflict.conflicts, vec!["a.txt"]);
+    assert!(conflict.blocked.is_none());
+}
+#[test]
+fn final_review_move_exact_count_works_without_remote_and_keeps_dirty_files() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    let root = git::resolve(&f.0, "HEAD").unwrap();
+    for name in ["a.txt", "b.txt"] {
+        f.write(name, name);
+        f.commit(name);
+    }
+    let tip = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("scratch.txt", "still working");
+    let review = operation::preview(
+        &f.0,
+        Kind::MoveCommits {
+            name: "feature/moved".into(),
+            count: 2,
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "feature/moved");
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), tip);
+    assert_eq!(git::resolve(&f.0, "refs/heads/main").unwrap(), root);
+    assert_eq!(
+        fs::read_to_string(f.0.join("scratch.txt")).unwrap(),
+        "still working"
+    );
+}
+#[test]
+fn final_review_branch_rename_and_recovery_use_checked_previews() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let root = git::resolve(&f.0, "HEAD").unwrap();
+    let rename = operation::preview(
+        &f.0,
+        Kind::RenameBranch {
+            name: "feature/renamed".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &rename).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "feature/renamed");
+    let recovered = operation::preview(
+        &f.0,
+        Kind::BranchFrom {
+            name: "main".into(),
+            commit: root.clone(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &recovered).unwrap();
+    assert_eq!(git::resolve(&f.0, "refs/heads/main").unwrap(), root);
+    assert!(operation::apply(&f.0, &recovered).is_err());
+}
+#[test]
+fn final_review_commit_details_load_history_outside_the_graph_page() {
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Initial commit");
+    let root = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("a.txt", "later");
+    f.commit("Later commit");
+    assert_eq!(git::load(&f.0, "main", 1).unwrap().commits.len(), 1);
+    let details = git::commit_details(&f.0, &root).unwrap();
+    assert_eq!(details.subject, "Initial commit");
+    assert!(details.parents.is_empty());
+}
+
+#[test]
+fn final_review_undo_branch_rename_restores_tracking_configuration() {
+    use branchroom::{
+        operation::{self, Kind},
+        timeline,
+    };
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["config", "branch.main.remote", "origin"]).unwrap();
+    git(&f.0, &["config", "branch.main.merge", "refs/heads/main"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::RenameBranch {
+            name: "renamed".into(),
+        },
+    )
+    .unwrap();
+    let entry = timeline::begin(&f.0, "Rename main").unwrap();
+    let id = entry.id.clone();
+    operation::apply(&f.0, &review).unwrap();
+    timeline::finish(&f.0, entry, true).unwrap();
+    assert_eq!(
+        git(&f.0, &["config", "branch.renamed.remote"])
+            .unwrap()
+            .trim(),
+        "origin"
+    );
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "main");
+    assert_eq!(
+        git(&f.0, &["config", "branch.main.remote"]).unwrap().trim(),
+        "origin"
+    );
+    assert!(git(&f.0, &["config", "branch.renamed.remote"]).is_err());
+}
+
+#[test]
+fn final_review_can_move_the_initial_commit_and_undo_the_move() {
+    use branchroom::{
+        operation::{self, Kind},
+        timeline,
+    };
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let plan = operation::preview(
+        &f.0,
+        Kind::MoveCommits {
+            name: "feature/initial".into(),
+            count: 1,
+        },
+    )
+    .unwrap();
+    let entry = timeline::begin(&f.0, "Move initial commit").unwrap();
+    let id = entry.id.clone();
+    operation::apply(&f.0, &plan).unwrap();
+    timeline::finish(&f.0, entry, true).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "feature/initial");
+    assert!(git::resolve(&f.0, "refs/heads/main").is_err());
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "main");
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
 }

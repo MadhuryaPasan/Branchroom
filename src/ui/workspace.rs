@@ -209,9 +209,9 @@ impl Branchroom {
                 ui.add_space(5.);subtitle(ui,"Each card brings a branch on this computer and its linked remote together. Remote information is from the last fetch.");
             }
         });
-        self.patch_drawer(ui);
+        self.patch_drawer(ui, false);
         self.graph_inspector(ui, ctx);
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(20)).show(ui,|ui|{
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{ui.label("Filter branches");ui.add(egui::TextEdit::singleline(&mut self.branch_filter).desired_width(220.).hint_text("feature/search"));if !self.branch_filter.is_empty()&&ui.button("Clear").clicked(){self.branch_filter.clear();}
                 ui.menu_button("Tree layout",|ui|{
                     subtitle(ui,"Set the width of the ancestor column.");
@@ -267,11 +267,29 @@ impl Branchroom {
                         let response=branch_card(ui,card,&name,&status,&location,self.selected_commit==branch.id||(self.cleanup_branches&&!branch.current&&!branch.remote&&branch.ahead==0),color);
                         response.dnd_set_drag_payload(manipulation::Payload::Branch{name:branch.name.clone(),current:branch.current,reference:branch_ref.clone()});
                         self.graph_drop(ui,&response,manipulation::Target::Branch(&branch_ref));
+                        if let Some(workspace) = repo.workspaces.iter().find(|workspace| workspace.branch == branch.name) {
+                            let desk_name = workspace.path.file_name().unwrap_or(workspace.path.as_os_str()).to_string_lossy();
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-245.,card.top()+8.),egui::vec2(120.,32.))),|ui| {
+                                let open = ui.button("Open folder").on_hover_text(format!(
+                                    "Open this branch's separate Git worktree in its IDE: {} ({desk_name})",
+                                    workspace.path.display()
+                                ));
+                                open.widget_info(|| egui::WidgetInfo::labeled(
+                                    egui::Role::Button,
+                                    ui.is_enabled(),
+                                    format!("Open worktree folder {desk_name} for {}", branch.name),
+                                ));
+                                if open.clicked() {
+                                    let result = self.settings.open(&workspace.path,self.settings.ide_for(&workspace.path));
+                                    self.report(result);
+                                }
+                            });
+                        }
                         let main=repo.default_branch.as_ref().and_then(|name|repo.branches.iter().find(|b|b.remote&&b.name==format!("origin/{name}")).or_else(||repo.branches.iter().find(|b|!b.remote&&b.name==*name)));
                         let source=main.map(|b|format!("refs/{}/{}",if b.remote{"remotes"}else{"heads"},b.name)).unwrap_or_else(||repo.base.clone());
                         if !branch.remote&&main.is_none_or(|b|b.id!=branch.id) {
                             ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-128.,card.top()+48.),egui::vec2(118.,28.))),|ui| {
-                                if ui.button(if source.ends_with("main"){ "Update from main" }else{"Update this branch"}).on_hover_text(format!("Preview updating {} from the default branch",branch.name)).clicked(){self.begin_graph_action(branchroom::operation::Kind::Merge{source:source.clone(),target:format!("refs/heads/{}",branch.name)});}
+                                if ui.button("Update branch").on_hover_text(format!("Preview updating {} from the default branch",branch.name)).clicked(){self.begin_graph_action(branchroom::operation::Kind::Merge{source:source.clone(),target:format!("refs/heads/{}",branch.name)});}
                             });
                         }
                         let total=(branch.ahead+branch.behind).max(1) as f32;
@@ -280,7 +298,8 @@ impl Branchroom {
                         if branch.ahead>0 { ui.painter().rect_filled(egui::Rect::from_min_size(bar.min,egui::vec2(bar.width()*branch.ahead as f32/total,3.)),1.,SUCCESS()); }
                         if branch.behind>0 { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bar.right()-bar.width()*branch.behind as f32/total,bar.top()),egui::vec2(bar.width()*branch.behind as f32/total,3.)),1.,WARNING()); }
                         if response.on_hover_text(format!("{}\n{}\n{}",branch.name,status,location)).clicked(){self.selected_commit=branch.id.clone();self.inspector_open=true;}
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-116.,card.top()+8.),egui::vec2(105.,32.))),|ui|{ui.menu_button("Actions",|ui|{
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-116.,card.top()+8.),egui::vec2(105.,32.))),|ui|{
+                            let actions = ui.menu_button("Actions",|ui|{
                             ui.label(branchroom::collaboration::branch_status(branch,&repo.branches));
                             if ui.button("Open branch code in IDE…").clicked(){self.begin_review(&branch.id,None);ui.close();}
                             if let Some(remote) = remote { ui.menu_button(format!("Remote branch: {}", remote.name), |ui| {
@@ -292,17 +311,30 @@ impl Branchroom {
                                 if ui.button("Compare remote with comparison branch").clicked(){self.detail_title=format!("{} → {}",repo.base,remote.name);self.read("git",process::strings(&["diff","--stat",&format!("{}...{}",repo.base,remote.name)]),ctx);ui.close();}
                             }); }
 
-                            if !branch.remote {ui.menu_button("Advanced",|ui|{
-                                if ui.button("Update this branch from comparison branch…").clicked(){self.propose_update(&branch.name);ui.close();}
-                                if ui.button("Publish / push this branch…").clicked(){self.form("Publish branch","Push the selected local branch and set its upstream. Review the destination remote.","git",&["push","--progress","--set-upstream"],&[("Remote","origin"),("Branch",&branch.name)],&[]);ui.close();}
-                            });}
+                            if !branch.remote && self.settings.advanced_mode {
+                                let advanced = ui.menu_button("Advanced",|ui|{
+                                    if ui.button("Update this branch from comparison branch…").clicked(){self.propose_update(&branch.name);ui.close();}
+                                    if ui.button("Publish / push this branch…").clicked(){self.form("Publish branch","Push the selected local branch and set its upstream. Review the destination remote.","git",&["push","--progress","--set-upstream"],&[("Remote","origin"),("Branch",&branch.name)],&[]);ui.close();}
+                                });
+                                advanced.response.widget_info(|| egui::WidgetInfo::labeled(
+                                    egui::Role::Button,
+                                    ui.is_enabled(),
+                                    format!("Advanced actions for {}", branch.name),
+                                ));
+                            }
                             if ui.button(if branch.current{"Show commit history"}else{"Switch & show commit history"}).clicked(){if !branch.current{self.request_switch(&branch.name,ctx);}self.page=Page::History;ui.close();}
                             if !branch.current&&ui.button("Switch branch").clicked(){self.request_switch(&branch.name,ctx);ui.close();}
                             if !branch.remote&&ui.button("Rename branch…").clicked(){self.form("Rename branch","Rename this local branch.","git",&["branch","-m",&branch.name],&[("New branch name","")],&[]);ui.close();}
                             if !branch.current&&ui.button("Merge into current").clicked(){self.propose("Merge branch","Merge this branch into the checked-out branch.",&["merge","--no-edit",&branch.name]);ui.close();}
                             if ui.button("Compare branches").clicked(){self.detail_title=format!("{} → {}",repo.base,branch.name);self.read("git",process::strings(&["diff","--stat",&format!("{}...{}",repo.base,branch.name)]),ctx);ui.close();}
                             if !branch.current&&!branch.remote&&ui.button(RichText::new("Delete merged branch").color(DANGER())).clicked(){self.pending=Some(Pending { title:"Delete merged branch".into(), explanation:format!("Delete {} after saving its tip in Time Machine. Git will refuse if its commits are missing from the current branch.",branch.name), task:Task::DeleteMerged {branch:branch.name.clone(),expected:branch.id.clone()} });ui.close();}
-                        });});
+                            });
+                            actions.response.widget_info(|| egui::WidgetInfo::labeled(
+                                egui::Role::Button,
+                                ui.is_enabled(),
+                                format!("Actions for {}", branch.name),
+                            ));
+                        });
                     }
                 }
                 if repo.branches.is_empty(){ui.heading("No branches yet");subtitle(ui,"Create your first commit from Changes to establish a branch.");}
@@ -317,11 +349,13 @@ impl Branchroom {
                 for branch in repo.branches.iter().filter(|b|!b.name.ends_with("/HEAD")){ui.selectable_value(&mut self.base_input,branch.name.clone(),&branch.name);}
             }).response.on_hover_text("Compare against");
             if ui.button("Apply").clicked(){self.settings.projects.entry(self.path()).or_default().base=self.base_input.clone();self.save();self.refresh_at(self.path(),ctx);}
-            ui.menu_button("Advanced branch operations",|ui|{
-                if ui.button("Fetch latest branches & tags").clicked(){self.run_git(&["fetch","--all","--prune"],ctx);ui.close();}
-                if ui.button("Update from comparison branch…").on_hover_text("Fetch the newest comparison branch and merge it without rewriting existing commits.").clicked(){self.propose_update(&repo.branch);ui.close();}
-                if ui.button("Replay commits on comparison branch").clicked(){self.propose("Replay commits","Replay the current commits on the comparison branch. Commit IDs change; avoid rewriting shared history.",&["rebase",&repo.base]);ui.close();}
-            });
+            if self.settings.advanced_mode {
+                ui.menu_button("Advanced branch operations",|ui|{
+                    if ui.button("Fetch latest branches & tags").clicked(){self.run_git(&["fetch","--all","--prune"],ctx);ui.close();}
+                    if ui.button("Update from comparison branch…").on_hover_text("Fetch the newest comparison branch and merge it without rewriting existing commits.").clicked(){self.propose_update(&repo.branch);ui.close();}
+                    if ui.button("Replay commits on comparison branch").clicked(){self.propose("Replay commits","Replay the current commits on the comparison branch. Commit IDs change; avoid rewriting shared history.",&["rebase",&repo.base]);ui.close();}
+                });
+            }
         });
     }
 }

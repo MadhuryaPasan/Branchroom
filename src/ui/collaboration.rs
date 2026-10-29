@@ -80,49 +80,70 @@ impl Branchroom {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        let mut selected_tab = self.pr_tab;
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(&mut self.pr_tab, 0, "Browse pull requests");
-            ui.selectable_value(&mut self.pr_tab, 1, "Create pull request");
-            if self.pr_details.is_some() {
-                ui.selectable_value(&mut self.pr_tab, 2, "Review pull request");
+            for (index, label) in [
+                (0, "Open"),
+                (1, "Mine"),
+                (2, "Review requested"),
+                (3, "Create"),
+            ] {
+                ui.selectable_value(&mut selected_tab, index, label);
             }
         });
-        ui.add_space(16.);
-        if self.pr_tab == 2 {
+        if selected_tab != self.pr_tab {
+            self.pr_tab = selected_tab;
+            self.prs_loaded = false;
+            self.prs_requested = false;
+            self.pull_requests.clear();
+        }
+        ui.add_space(12.);
+        if self.pr_tab == 4 {
             self.pull_request_details(ui, ctx);
             return;
         }
-        if self.pr_tab == 0 {
-            ui.horizontal_wrapped(|ui| {
-                if ui
-                    .add_enabled(
-                        self.receiver.is_none(),
-                        egui::Button::new("Reload pull requests"),
-                    )
-                    .on_hover_text(
-                        "Read the latest open pull requests from GitHub. Requires gh sign-in.",
-                    )
-                    .clicked()
-                {
-                    self.execute(Task::PullRequests, ctx);
-                }
-            });
-            subtitle(
-                ui,
-                "Remote branches are last-fetched copies. Reload pull requests to check GitHub; fetch to update branch tips.",
-            );
-            ui.add_space(12.);
+        if self.pr_tab < 3 {
+            if !self.preview_mode && !self.prs_requested && self.receiver.is_none() {
+                self.prs_requested = true;
+                let filter = match self.pr_tab {
+                    1 => branchroom::collaboration::PullRequestFilter::Mine,
+                    2 => branchroom::collaboration::PullRequestFilter::ReviewRequested,
+                    _ => branchroom::collaboration::PullRequestFilter::Open,
+                };
+                self.execute(Task::PullRequests(filter), ctx);
+            }
+            if !self.prs_loaded && self.receiver.is_some() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Loading pull requests…");
+                });
+            }
             if self.prs_loaded && self.pull_requests.is_empty() {
                 subtitle(
                     ui,
-                    "No matching pull requests. Use Create pull request to propose a change.",
+                    match self.pr_tab {
+                        1 => "You have no open pull requests.",
+                        2 => "No pull requests are waiting for your review.",
+                        _ => "No open pull requests. Create one to propose a change.",
+                    },
                 );
             }
-            if !self.prs_loaded {
-                subtitle(
-                    ui,
-                    "Load pull requests to browse titles, branches, and IDE review actions.",
-                );
+            if !self.prs_loaded && self.receiver.is_none() {
+                ui.horizontal_wrapped(|ui| {
+                    subtitle(
+                        ui,
+                        "Pull requests could not be loaded. Check the GitHub connection and retry.",
+                    );
+                    if ui.button("Retry").clicked() {
+                        self.prs_requested = true;
+                        let filter = match self.pr_tab {
+                            1 => branchroom::collaboration::PullRequestFilter::Mine,
+                            2 => branchroom::collaboration::PullRequestFilter::ReviewRequested,
+                            _ => branchroom::collaboration::PullRequestFilter::Open,
+                        };
+                        self.execute(Task::PullRequests(filter), ctx);
+                    }
+                });
             }
             egui::ScrollArea::vertical().id_salt("pr_list").max_height(420.).show(ui, |ui| {
             for pr in self.pull_requests.clone() {
@@ -132,7 +153,13 @@ impl Branchroom {
                             badge(ui, if pr.is_draft { "Draft" } else { &pr.state }, if pr.is_draft || pr.state == "CLOSED" { MUTED() } else { SUCCESS() });
                             ui.hyperlink_to(format!("#{} {}", pr.number, pr.title), &pr.url);
                         });
-                        subtitle(ui, &format!("{}  →  {}", pr.head_ref_name, pr.base_ref_name));
+                        subtitle(
+                            ui,
+                            &format!(
+                                "Compare: {} · Base: {}",
+                                pr.head_ref_name, pr.base_ref_name
+                            ),
+                        );
                         ui.horizontal_wrapped(|ui| {
                             if ui.button("Review changes").clicked() { self.execute(Task::PullRequestDetails(pr.number),ctx); }
                             if ui.button("Open code in IDE…").on_hover_text("Download the PR into a separate parallel workspace; keep your current checkout unchanged.").clicked() { self.begin_review(&format!("PR #{} · {}", pr.number, pr.title), Some(pr.number)); }
@@ -145,64 +172,442 @@ impl Branchroom {
         });
             return;
         }
-        ui.add_space(8.);
-        surface().show(ui, |ui| {
-            ui.heading("Create a pull request");
-            subtitle(ui, "Compare your published branch with the branch that should receive the changes.");
-            if self.pr_base.is_empty() { self.pr_base = if repo.branches.iter().any(|b|b.remote && b.name==repo.base){repo.base.split_once('/').map(|(_,name)|name).unwrap_or(&repo.base).into()}else{repo.base.clone()}; }
-            if self.pr_head.is_empty() { self.pr_head = repo.branch.clone(); }
-            ui.horizontal_wrapped(|ui| {
-                ui.label("Base (destination)").on_hover_text("The branch that will receive your changes, usually main.");
-                egui::ComboBox::from_id_salt("pr_base").selected_text(&self.pr_base).show_ui(ui, |ui| {
-                    let mut names: Vec<_> = repo.branches.iter().map(|b| if b.remote { b.name.split_once('/').map(|(_, n)|n).unwrap_or(&b.name).to_string() } else { b.name.clone() }).filter(|n|n != "HEAD").collect();
-                    names.sort(); names.dedup();
-                    for name in names { ui.selectable_value(&mut self.pr_base, name.clone(), name); }
-                }).response.on_hover_text("Pull request base branch");
-                ui.label("← Compare (source)").on_hover_text("The branch containing the commits you want reviewed.");
-                egui::ComboBox::from_id_salt("pr_head").selected_text(&self.pr_head).show_ui(ui, |ui| {
-                    for b in repo.branches.iter().filter(|b| !b.remote) { ui.selectable_value(&mut self.pr_head, b.name.clone(), &b.name); }
-                }).response.on_hover_text("Pull request compare branch");
-            });
-            let branch = repo.branches.iter().find(|b| !b.remote && b.name == self.pr_head);
-            let ready = branch.is_some_and(|b| !b.upstream.is_empty() && b.tracking.is_empty() && repo.branches.iter().any(|remote|remote.remote&&remote.name==b.upstream));
-            if let Some(branch) = branch { ui.label(branchroom::collaboration::branch_status(branch, &repo.branches)); }
-            if !ready { subtitle(ui, "Publish or sync this branch before creating the pull request. Fetch to verify its remote status."); }
-            ui.horizontal_wrapped(|ui| {
-                if ui.button("Preview commits & files").clicked() {
-                    let base = if repo.branches.iter().any(|b| b.name == format!("origin/{}",self.pr_base)) { format!("origin/{}",self.pr_base) } else { self.pr_base.clone() };
-                    self.detail_title = format!("{} → {} · comparison", self.pr_head, self.pr_base);
-                    self.read("git", process::strings(&["log", "--oneline", "--stat", &format!("{base}..{}",self.pr_head)]), ctx);
-                }
-                if ui.button("Publish / sync branch…").clicked() { self.page = Page::Branches; self.branch_filter = self.pr_head.clone(); }
-            });
-            ui.horizontal_wrapped(|ui|{
-                ui.menu_button("Load description template",|ui|{
-                    let templates=branchroom::github::templates(&repo.root);
-                    if templates.is_empty(){subtitle(ui,"No pull request templates in this repository.");}
-                    for path in templates{
-                        let label=path.strip_prefix(&repo.root).unwrap_or(&path).display().to_string();
-                        if ui.button(label).clicked(){match branchroom::github::load_template(&repo.root,&path){Ok(text)=>{if self.pr_body.trim().is_empty(){self.pr_body=text;}else{self.pr_body.push_str("\n\n");self.pr_body.push_str(&text);}},Err(e)=>self.report(Err(e))}ui.close();}
-                    }
+        if self.pr_base.is_empty() {
+            self.pr_base = if repo
+                .branches
+                .iter()
+                .any(|b| b.remote && b.name == repo.base)
+            {
+                repo.base
+                    .split_once('/')
+                    .map(|(_, name)| name)
+                    .unwrap_or(&repo.base)
+                    .into()
+            } else {
+                repo.base.clone()
+            };
+        }
+        if self.pr_head.is_empty() {
+            self.pr_head = repo.branch.clone();
+        }
+        if self.pr_base == self.pr_head {
+            let default_base = repo
+                .base
+                .split_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(&repo.base);
+            self.pr_base = if default_base != self.pr_head {
+                default_base.into()
+            } else {
+                repo.branches
+                    .iter()
+                    .filter(|branch| !branch.name.ends_with("/HEAD"))
+                    .map(|branch| {
+                        if branch.remote {
+                            branch
+                                .name
+                                .split_once('/')
+                                .map(|(_, name)| name)
+                                .unwrap_or(&branch.name)
+                        } else {
+                            &branch.name
+                        }
+                    })
+                    .find(|name| *name != self.pr_head)
+                    .unwrap_or("")
+                    .into()
+            };
+        }
+        if self.pr_prefill_branch != self.pr_head {
+            self.pr_prefill_branch = self.pr_head.clone();
+            let suggested_title = repo
+                .branch_commits
+                .first()
+                .filter(|_| self.pr_head == repo.branch)
+                .map(|commit| commit.subject.clone())
+                .filter(|title| !title.is_empty())
+                .unwrap_or_else(|| {
+                    self.pr_head
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&self.pr_head)
+                        .replace(['-', '_'], " ")
                 });
-            });
-            ui.label("Title");
-            ui.add(egui::TextEdit::singleline(&mut self.pr_title).desired_width(f32::INFINITY).hint_text("Describe the change"));
-            ui.label("Description (Markdown)");
-            ui.add(egui::TextEdit::multiline(&mut self.pr_body).desired_rows(5).desired_width(f32::INFINITY).hint_text("What changed? Why? How was it tested?"));
-            egui::CollapsingHeader::new("Reviewers and labels").show(ui,|ui|{
-                ui.label("Reviewers");ui.add(egui::TextEdit::singleline(&mut self.pr_reviewers).desired_width(f32::INFINITY).hint_text("GitHub logins, separated by commas"));
-                ui.label("Labels");ui.add(egui::TextEdit::singleline(&mut self.pr_labels).desired_width(f32::INFINITY).hint_text("Label names, separated by commas"));
-            });
-            ui.checkbox(&mut self.pr_draft, "Create as draft").on_hover_text("A draft invites early feedback and is not ready to merge.");
-            if primary(ui, "Review pull request…").clicked() {
-                if self.pr_title.trim().is_empty() || self.pr_head == self.pr_base || !ready {
-                    self.report(Err("Enter a title, choose different base and compare branches, and publish/sync the compare branch before continuing.".into()));
-                } else {
-                    let request=branchroom::github::CreateRequest{base:self.pr_base.clone(),head:self.pr_head.clone(),head_oid:branch.unwrap().id.clone(),title:self.pr_title.clone(),body:self.pr_body.clone(),draft:self.pr_draft,reviewers:self.pr_reviewers.split(',').map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect(),labels:self.pr_labels.split(',').map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect()};
-                    match request.arguments(){Ok(_)=>self.pending=Some(Pending{title:"Create pull request".into(),explanation:format!("Publish {} → {} on the GitHub repository configured for this checkout.\nTitle: {}\n{}\nReviewers: {}\nLabels: {}\n\n{}",self.pr_head,self.pr_base,self.pr_title,if self.pr_draft{"Draft: not ready to merge"}else{"Ready for review"},self.pr_reviewers,self.pr_labels,self.pr_body),task:Task::CreatePullRequest(request)}),Err(e)=>self.report(Err(e))}
-
+            if self.pr_title.trim().is_empty() || self.pr_title == self.pr_auto_title {
+                self.pr_title = suggested_title.clone();
+                self.pr_auto_title = suggested_title;
+            }
+            if self.pr_body.trim().is_empty()
+                && let Some(template) = branchroom::github::templates(&repo.root).first()
+            {
+                match branchroom::github::load_template(&repo.root, template) {
+                    Ok(body) => self.pr_body = body,
+                    Err(error) => self.report(Err(format!(
+                        "Could not load the pull request template: {error}"
+                    ))),
                 }
             }
+        }
+        let branch = repo
+            .branches
+            .iter()
+            .find(|b| !b.remote && b.name == self.pr_head);
+        let ready = branch.is_some_and(|b| {
+            !b.upstream.is_empty()
+                && b.tracking.is_empty()
+                && repo
+                    .branches
+                    .iter()
+                    .any(|remote| remote.remote && remote.name == b.upstream)
+        });
+        let publication_summary = if ready {
+            "The branch is already published and up to date.".into()
+        } else {
+            branch
+                .map(|branch| {
+                    format!(
+                        "Publish commit {} from {} to {}, then create the pull request.",
+                        branch.id.chars().take(12).collect::<String>(),
+                        self.pr_head,
+                        self.pr_publish_remote
+                    )
+                })
+                .unwrap_or_else(|| "Choose a local compare branch before publishing.".into())
+        };
+        let preview_key = format!("{}\u{0}{}", self.pr_head, self.pr_base);
+        if !self.preview_mode
+            && preview_key != self.pr_preview_key
+            && preview_key != self.pr_preview_requested
+            && self.receiver.is_none()
+        {
+            self.pr_preview_requested = preview_key.clone();
+            self.execute(
+                Task::PullRequestPreview {
+                    head: self.pr_head.clone(),
+                    base: self.pr_base.clone(),
+                },
+                ctx,
+            );
+        }
+        let mut remotes: Vec<String> = repo
+            .remotes
+            .lines()
+            .filter_map(|line| line.split_whitespace().next().map(str::to_owned))
+            .collect();
+        remotes.sort();
+        remotes.dedup();
+        if !remotes
+            .iter()
+            .any(|remote| remote == &self.pr_publish_remote)
+        {
+            self.pr_publish_remote = remotes.first().cloned().unwrap_or_else(|| "origin".into());
+        }
+        let column_count = if ui.available_width() >= 860. { 2 } else { 1 };
+        ui.columns(column_count, |columns| {
+            surface().show(&mut columns[0], |ui| {
+                ui.label(RichText::new("Create a pull request").strong());
+                subtitle(
+                    ui,
+                    "Choose where these changes should go. Branch names cannot match.",
+                );
+                ui.label("Base branch");
+                egui::ComboBox::from_id_salt("pr_base")
+                    .selected_text(&self.pr_base)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        let mut names: Vec<_> = repo
+                            .branches
+                            .iter()
+                            .map(|branch| {
+                                if branch.remote {
+                                    branch
+                                        .name
+                                        .split_once('/')
+                                        .map(|(_, name)| name)
+                                        .unwrap_or(&branch.name)
+                                        .to_string()
+                                } else {
+                                    branch.name.clone()
+                                }
+                            })
+                            .filter(|name| name != "HEAD" && name != &self.pr_head)
+                            .collect();
+                        names.sort();
+                        names.dedup();
+                        for name in names {
+                            ui.selectable_value(&mut self.pr_base, name.clone(), name);
+                        }
+                    })
+                    .response
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            format!("Pull request base branch: {}", self.pr_base),
+                        )
+                    });
+                ui.label("Compare branch");
+                egui::ComboBox::from_id_salt("pr_head")
+                    .selected_text(&self.pr_head)
+                    .width(ui.available_width())
+                    .show_ui(ui, |ui| {
+                        for branch in repo.branches.iter().filter(|branch| !branch.remote) {
+                            ui.selectable_value(
+                                &mut self.pr_head,
+                                branch.name.clone(),
+                                &branch.name,
+                            );
+                        }
+                    })
+                    .response
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            format!("Pull request compare branch: {}", self.pr_head),
+                        )
+                    });
+                ui.label("Title");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.pr_title)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Describe the change"),
+                );
+                ui.label("Description");
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.pr_body)
+                        .desired_rows(5)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("What changed? Why? How was it tested?"),
+                );
+                egui::CollapsingHeader::new("Reviewers and labels").show(ui, |ui| {
+                    ui.label("Reviewers");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.pr_reviewers)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("GitHub logins, separated by commas"),
+                    );
+                    ui.label("Labels");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.pr_labels)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Label names, separated by commas"),
+                    );
+                });
+                ui.checkbox(&mut self.pr_draft, "Create as draft");
+                if !ready {
+                    ui.checkbox(
+                        &mut self.pr_publish_if_needed,
+                        "Publish compare branch automatically",
+                    );
+                    if self.pr_publish_if_needed {
+                        ui.horizontal(|ui| {
+                            ui.label("Remote");
+                            egui::ComboBox::from_id_salt("pr_publish_remote")
+                                .selected_text(&self.pr_publish_remote)
+                                .show_ui(ui, |ui| {
+                                    for remote in &remotes {
+                                        ui.selectable_value(
+                                            &mut self.pr_publish_remote,
+                                            remote.clone(),
+                                            remote,
+                                        );
+                                    }
+                                })
+                                .response
+                                .widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::Role::Button,
+                                        true,
+                                        format!("Publish to remote: {}", self.pr_publish_remote),
+                                    )
+                                });
+                        });
+                    }
+                }
+                let can_publish = ready || (self.pr_publish_if_needed && !remotes.is_empty());
+                let can_create = can_publish
+                    && !self.pr_title.trim().is_empty()
+                    && self.pr_head != self.pr_base
+                    && branch.is_some();
+                let review_clicked = ui
+                    .add_enabled_ui(can_create, |ui| primary(ui, "Review pull request…"))
+                    .inner
+                    .clicked();
+                if review_clicked {
+                    let request = branchroom::github::CreateRequest {
+                        base: self.pr_base.clone(),
+                        head: self.pr_head.clone(),
+                        head_oid: branch.unwrap().id.clone(),
+                        title: self.pr_title.clone(),
+                        body: self.pr_body.clone(),
+                        draft: self.pr_draft,
+                        publish_if_needed: self.pr_publish_if_needed,
+                        publish_remote: self.pr_publish_remote.clone(),
+                        reviewers: self
+                            .pr_reviewers
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                        labels: self
+                            .pr_labels
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect(),
+                    };
+                    match request.arguments() {
+                        Ok(_) => {
+                            self.pending = Some(Pending {
+                                title: "Create pull request".into(),
+                                explanation: format!(
+                                    "Base branch: {}\nCompare branch: {}\nTitle: {}\n{}\n{}\nReviewers: {}\nLabels: {}\n\n{}",
+                                    self.pr_base,
+                                    self.pr_head,
+                                    self.pr_title,
+                                    if self.pr_draft {
+                                        "Create as draft"
+                                    } else {
+                                        "Ready for review"
+                                    },
+                                    publication_summary,
+                                    if self.pr_reviewers.trim().is_empty() {
+                                        "none"
+                                    } else {
+                                        self.pr_reviewers.trim()
+                                    },
+                                    if self.pr_labels.trim().is_empty() {
+                                        "none"
+                                    } else {
+                                        self.pr_labels.trim()
+                                    },
+                                    self.pr_body
+                                ),
+                                task: Task::CreatePullRequest(request),
+                            })
+                        }
+                        Err(error) => self.report(Err(error)),
+                    }
+                }
+                if !can_create {
+                    subtitle(
+                        ui,
+                        if branch.is_none() {
+                            "Choose an existing local compare branch."
+                        } else if self.pr_head == self.pr_base {
+                            "Choose different base and compare branches."
+                        } else if self.pr_title.trim().is_empty() {
+                            "Enter a title to continue."
+                        } else if !ready && !self.pr_publish_if_needed {
+                            "Publish the compare branch manually or enable automatic publishing."
+                        } else if remotes.is_empty() {
+                            "Add a remote before publishing the compare branch."
+                        } else {
+                            "Choose a remote to publish this branch."
+                        },
+                    );
+                }
+            });
+            surface().show(&mut columns[column_count-1], |ui| {
+                ui.label(RichText::new("Pull request preview").strong());
+                subtitle(ui, "Not created yet · review these details before creating it.");
+                ui.horizontal_wrapped(|ui| {
+                    badge(ui, "BASE", MUTED());
+                    ui.label(RichText::new(&self.pr_base).strong());
+                });
+                ui.horizontal_wrapped(|ui| {
+                    badge(ui, "COMPARE", ACCENT());
+                    ui.label(RichText::new(&self.pr_head).strong());
+                });
+                ui.horizontal_wrapped(|ui| {
+                    badge(
+                        ui,
+                        if self.pr_draft {
+                            "DRAFT"
+                        } else {
+                            "READY FOR REVIEW"
+                        },
+                        if self.pr_draft {
+                            MUTED()
+                        } else {
+                            SUCCESS()
+                        },
+                    );
+                    if !self.pr_title.trim().is_empty() {
+                        ui.label(RichText::new(&self.pr_title).strong());
+                    } else {
+                        subtitle(ui, "Add a title for this pull request.");
+                    }
+                });
+                if !self.pr_reviewers.trim().is_empty() {
+                    subtitle(ui, &format!("Reviewers: {}", self.pr_reviewers.trim()));
+                }
+                if !self.pr_labels.trim().is_empty() {
+                    subtitle(ui, &format!("Labels: {}", self.pr_labels.trim()));
+                }
+                ui.add_space(12.);
+                ui.heading("Changes in this pull request");
+                if self.preview_mode && self.pr_preview_key != preview_key {
+                    subtitle(
+                        ui,
+                        "Live pull request preview is unavailable in UI preview.",
+                    );
+                } else if self.pr_preview_key != preview_key {
+                    if self.pr_preview_requested == preview_key && self.receiver.is_none() {
+                        subtitle(
+                            ui,
+                            "The preview did not load. Check the activity log and retry.",
+                        );
+                        if ui.button("Retry preview").clicked() {
+                            self.pr_preview_requested.clear();
+                        }
+                    } else {
+                        ui.add(egui::Spinner::new());
+                        subtitle(ui, "Loading commits and changed files…");
+                    }
+                } else {
+                    section(ui, "COMMITS");
+                    badge(
+                        ui,
+                        &format!("{} shown", self.pr_preview_commits.len()),
+                        MUTED(),
+                    );
+                    if self.pr_preview_commits.len() == 8 {
+                        subtitle(ui, "Showing the 8 most recent commits.");
+                    }
+                    if self.pr_preview_commits.is_empty() {
+                        subtitle(ui, "No commits ahead of the base branch.");
+                    } else {
+                        for commit in &self.pr_preview_commits {
+                            ui.label(format!("• {commit}"));
+                        }
+                    }
+                    ui.add_space(12.);
+                    section(ui, "CHANGED FILES");
+                    badge(
+                        ui,
+                        &format!("{} shown", self.pr_preview_files.len()),
+                        MUTED(),
+                    );
+                    if self.pr_preview_files.len() == 100 {
+                        subtitle(ui, "Showing the first 100 changed files.");
+                    }
+                    if self.pr_preview_files.is_empty() {
+                        subtitle(ui, "No changed files.");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(240.)
+                            .show(ui, |ui| {
+                                for file in &self.pr_preview_files {
+                                    ui.label(file);
+                                }
+                            });
+                    }
+                }
+            });
         });
     }
 }

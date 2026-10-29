@@ -4,9 +4,9 @@ Current implementation: 0.2.0-rc.1, 26 October 2026. This document replaces incr
 
 ## Workspace model
 
-The top bar owns repository and branch selection, refresh/sync, and IDE access. Current branch search separates local branches from last-fetched remote refs. Collaboration actions belong to the sidebar. History always follows the checked-out branch; pull requests are a separate workspace.
+The top bar owns repository and branch selection, refresh/sync, and IDE access. Current branch search separates local branches from last-fetched remote refs. Collaboration actions belong to the sidebar. History includes all loaded branch tips; the checked-out branch is marked and selection is shared across graph lenses. Pull requests also remain available in their own workspace.
 
-Primary surfaces are Changes, History, Snapshots, Pull requests, Merge branches, Branch map, Compare & recovery, Stashes, Conflicts, Repositories, Command center, and Settings. Status/progress is persistent; detailed output opens in a dismissible activity drawer. Blocking mutation review shows repository, effect, and command details when applicable.
+The four primary surfaces are Graph, Changes, Pull requests and Time Machine. Graph owns Commits, Branch map and Compare lenses. Conflicts are contextual; Repositories, Settings and Advanced tools remain available through contextual controls. Status/progress is persistent; detailed output opens in a dismissible activity drawer. Blocking mutation review shows repository, effect, and command details when applicable.
 
 ## Content and hierarchy
 
@@ -18,7 +18,7 @@ History and diffs use virtual rows. Filtered history does not draw invented edge
 
 Headers measure their content instead of imposing fixed heights on wrapping controls. Below the sidebar breakpoint, Workspace contains navigation. At smaller content widths, Changes has Files / Diff / Commit tabs, selecting a file opens Diff, and Diff options holds formatting/selection actions. The commit action stays below the scrolling composer.
 
-Snapshot trees become a vertical indented source/capture hierarchy at narrow widths. Compare versions is collapsed initially in compact mode, with its disclosure visible. Inspectors move into separate windows when they no longer fit beside the content. Diagrams and code retain scrolling; a zoomed viewport is not represented as a shrunken desktop mockup.
+Time Machine uses a vertical timeline at every width. The commit inspector uses bounded sibling panes, a compact dock and an explicit expanded detail view at short window heights. Its actions stay outside the metadata scroller. PR creation stacks its form and live preview when two columns do not fit. Diagrams and code retain scrolling; a zoomed viewport is not represented as a shrunken desktop mockup.
 
 ## Visual system
 
@@ -66,3 +66,31 @@ Scope: the repository/branch selectors, Changes header, changed-file rows and co
 Verification: `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features --locked -- -D warnings`, `cargo test --all-targets --all-features --locked`, `cargo test --all-features --bin branchroom render_changes_tuning --locked -- --ignored --nocapture`, and `python scripts/Check-Contrast.py`. Framework renders were inspected at 1320×820, with long names and at 1060×700 with 200% zoom. Generated fixture data was used; no user repository was operated on.
 
 Verdict for the inspected scope: **Approve**, with native screen-reader, physical-DPI, localization and RTL behavior not verified.
+
+## Pull request and clean-worktree follow-up — 29 October 2026
+
+Pull requests now open directly to their list and offer Open, Mine, Review requested, and Create tabs. Creating a PR defaults the destination branch, prevents selecting the same source and destination, suggests a title and repository template, and shows commits and changed files beside the form. If the branch needs publishing, the user reviews and confirms that push together with PR creation. GitHub connection controls are kept in a compact popover. The command search accepts common recovery phrases and shows the corresponding Git command for learning; these entries open the appropriate workspace rather than executing commands.
+
+The clean Changes view replaces the empty file/diff/commit panes with a short branch status, recent commits, and next actions. The commit summary shows its character count. Repository remotes are presented as rows with separate fetch and push URLs; editing a row fills the remote settings controls.
+
+Verification coverage added in `src/ui/qa.rs` checks the PR creation layout and tabs, clean-worktree actions, and natural-language command search. `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features --locked -- -D warnings`, and `cargo test --all-targets --all-features --locked` passed; the final UI suite also passed after follow-up refinements. Preview-mode tests do not contact GitHub or run Git commands.
+
+## Guided fixes and workspace graph follow-up
+
+The command search now launches reviewed actions for moving unpublished commits, splitting the latest commit, and safely reverting history; branch rename opens its existing form, and branch recovery selects a Time Machine recovery point. Move-to-new-branch previews allow the destination name to be edited. Pull-request badges on commit rows open their details, and branch-map cards expose matching linked worktrees as IDE-launchable Desk nodes. Worktree porcelain parsing handles multiple and detached checkouts.
+
+Simple mode is the default. Advanced mode is persisted in Settings and gates raw command tools, graph/history forms, force-push controls, and advanced recovery and branch operations. UI tests cover these routes and the new graph affordances.
+
+## Branch-map interaction polish
+
+The branch-map update control uses a short single-line label with the full effect available on hover, preventing it from wrapping over branch sync indicators. Branch-card update/publish tools are hidden in Simple mode and appear under Advanced when enabled. The branch-map UI test checks both the label and mode behavior; the framework screenshot export was rerun for visual review.
+
+## Commit review and comparison clarity
+
+The branch strip is labeled “Branches & worktrees,” explains that branch names mark their latest commits, and scrolls horizontally when its contents do not fit. Branch tips explain their selection and drag behavior on hover. The unnecessary Folder control has been removed. The commit inspector uses a fixed-width, non-resizable right dock on wide screens and a compact bottom dock on narrow screens. At extremely constrained high zoom, it anchors to the bottom so the graph can remain scrollable. The history content uses explicitly reserved sibling regions rather than a nested central panel, preventing the graph from covering the inspector or patch preview. It ignores stale changed-file results when selection changes. Commit rows explain single- and double-click behavior, keep the active selection click-driven, and visibly mark the active commit; opening a patch names both the abbreviated commit ID and its subject. Linked PR badges and inspector details identify the PR title, compare branch, base branch, state, and CI status.
+
+The Compare page distinguishes “Base branch” from “Compare with,” puts both branch names and unique-commit counts in a summary, and labels each unique-commit list with its actual branch. The two lists sit side by side when space permits, with changed files in a separate section; selecting a file opens the comparison patch. Pull-request creation previews explicitly label Base and Compare, show draft/review state and commit/file counts, and identify commits with abbreviated SHAs. The confirmation summary repeats the exact branch roles and optional reviewers and labels. UI tests cover these labels, branch selection, and the patch title.
+
+## Final UI and release pass — 29 October 2026
+
+See [the final review](FINAL-UI-REVIEW-2026-10-29.md) for the current findings, resolved inspector geometry and selection issues, six-phase coverage, verification commands and release boundary. This supersedes earlier descriptions of the snapshot tree and overlay inspector.

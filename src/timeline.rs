@@ -19,6 +19,8 @@ pub struct State {
     pub index: String,
     pub refs: BTreeMap<String, String>,
     pub stashes: Vec<(String, String)>,
+    #[serde(default)]
+    pub branch_config: Option<BTreeMap<String, Vec<String>>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
@@ -177,6 +179,7 @@ pub fn capture(root: &Path, label: &str) -> Result<State> {
         &[],
     )?;
     Ok(State {
+        branch_config: Some(branch_config(root)?),
         head,
         branch,
         index,
@@ -198,6 +201,9 @@ fn equivalent(a: &State, b: &State, root: &Path) -> bool {
         && a.index == b.index
         && a.refs == b.refs
         && a.stashes == b.stashes
+        && a.branch_config
+            .as_ref()
+            .is_none_or(|config| b.branch_config.as_ref() == Some(config))
         && tree(root, &a.working)
             .ok()
             .zip(tree(root, &b.working).ok())
@@ -386,6 +392,25 @@ fn restore_state(root: &Path, from: &State, to: &State) -> Result<()> {
     ) {
         let _ = restore_files(root, to, from);
         return Err(error);
+    }
+    if let Some(saved) = &to.branch_config {
+        let current = branch_config(root)?;
+        for key in current
+            .keys()
+            .chain(saved.keys())
+            .collect::<std::collections::BTreeSet<_>>()
+        {
+            if current.get(key) != saved.get(key) {
+                if current.contains_key(key) {
+                    git(root, &["config", "--local", "--unset-all", key])?;
+                }
+                if let Some(values) = saved.get(key) {
+                    for value in values {
+                        git(root, &["config", "--local", "--add", key, value])?;
+                    }
+                }
+            }
+        }
     }
     if from.stashes != to.stashes {
         if git::resolve(root, "refs/stash").is_ok() {
@@ -779,6 +804,25 @@ impl RestorePlan {
         } else {
             lines.push(format!("git update-ref --no-deref --stdin <<'BRANCHROOM_RESTORE'\n{transaction}BRANCHROOM_RESTORE"));
         }
+        if let Some(saved) = &self.to.branch_config {
+            let current = self.from.branch_config.clone().unwrap_or_default();
+            for key in current
+                .keys()
+                .chain(saved.keys())
+                .collect::<std::collections::BTreeSet<_>>()
+            {
+                if current.get(key) != saved.get(key) {
+                    if current.contains_key(key) {
+                        lines.push(command(&["config", "--local", "--unset-all", key]));
+                    }
+                    if let Some(values) = saved.get(key) {
+                        for value in values {
+                            lines.push(command(&["config", "--local", "--add", key, value]));
+                        }
+                    }
+                }
+            }
+        }
         if self.from.stashes != self.to.stashes {
             if self.from.refs.contains_key("refs/stash") {
                 lines.push(command(&["update-ref", "-d", "refs/stash"]));
@@ -836,4 +880,31 @@ pub fn state_graph(root: &Path, state: &State) -> Result<Vec<git::Commit>> {
             .join(", ");
     }
     Ok(commits)
+}
+
+fn branch_config(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
+    let text = git(
+        root,
+        &[
+            "config",
+            "--local",
+            "--null",
+            "--get-regexp",
+            r"^(branch|remote)\.",
+        ],
+    )
+    .or_else(|error| {
+        if error.contains("code: 1") {
+            Ok(String::new())
+        } else {
+            Err(error)
+        }
+    })?;
+    let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for record in text.split('\0') {
+        if let Some((key, value)) = record.split_once('\n') {
+            result.entry(key.into()).or_default().push(value.into());
+        }
+    }
+    Ok(result)
 }

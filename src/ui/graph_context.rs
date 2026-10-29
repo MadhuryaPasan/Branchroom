@@ -16,7 +16,9 @@ pub(super) struct ContextData {
 }
 pub(super) struct ReviewBadge {
     pub number: u64,
+    pub title: String,
     pub branch: String,
+    pub base_branch: String,
     pub commit: String,
     pub url: String,
     pub state: String,
@@ -37,7 +39,9 @@ impl GraphContext {
                 if !data.reviews.iter().any(|p| p.number == pr.number) {
                     data.reviews.push(ReviewBadge {
                         number: pr.number,
+                        title: pr.title,
                         branch: pr.head_ref_name,
+                        base_branch: pr.base_ref_name,
                         commit: String::new(),
                         url: pr.url,
                         state: pr.state.to_lowercase(),
@@ -128,7 +132,7 @@ impl Branchroom {
                         "--limit",
                         "100",
                         "--json",
-                        "number,headRefName,headRefOid,url,state,statusCheckRollup",
+                        "number,title,headRefName,headRefOid,baseRefName,url,state,statusCheckRollup",
                     ]),
                 )?;
                 let prs: serde_json::Value =
@@ -161,7 +165,9 @@ impl Branchroom {
                         let text = |key: &str| p[key].as_str().unwrap_or("").to_owned();
                         ReviewBadge {
                             number: p["number"].as_u64().unwrap_or(0),
+                            title: text("title"),
                             branch: text("headRefName"),
+                            base_branch: text("baseRefName"),
                             commit: text("headRefOid"),
                             url: text("url"),
                             state: text("state").to_lowercase(),

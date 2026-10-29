@@ -16,43 +16,6 @@ struct Comparison {
 impl Branchroom {
     pub(super) fn comparison_canvas(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let repo = self.repo.as_ref().unwrap().clone();
-        ui.horizontal_wrapped(|ui| {
-            ui.heading("Compare");
-            for (label, value) in [
-                ("Compare against", &mut self.compare_base),
-                ("With", &mut self.compare_head),
-            ] {
-                egui::ComboBox::from_label(label)
-                    .selected_text(
-                        value
-                            .strip_prefix("refs/heads/")
-                            .or_else(|| value.strip_prefix("refs/remotes/"))
-                            .unwrap_or(value),
-                    )
-                    .width(150.)
-                    .show_ui(ui, |ui| {
-                        for branch in &repo.branches {
-                            ui.selectable_value(
-                                value,
-                                format!(
-                                    "refs/{}/{}",
-                                    if branch.remote { "remotes" } else { "heads" },
-                                    branch.name
-                                ),
-                                &branch.name,
-                            );
-                        }
-                        for commit in &repo.commits {
-                            ui.selectable_value(
-                                value,
-                                commit.id.clone(),
-                                format!("{} {}", short(&commit.id), commit.subject),
-                            );
-                        }
-                    });
-            }
-            ui.checkbox(&mut self.inspector_open, "Inspector");
-        });
         let tips = repo
             .branches
             .iter()
@@ -168,13 +131,96 @@ impl Branchroom {
             }
         }
         self.graph_inspector(ui, ctx);
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("comparison_workspace")
+            .show(ui, |ui| {
+                heading(
+                    ui,
+                    "Compare branches",
+                    "See which commits and files differ between two branch tips.",
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Base branch");
+                    let base_picker = egui::ComboBox::from_id_salt("compare_base")
+                        .selected_text(
+                            self.compare_base
+                                .strip_prefix("refs/heads/")
+                                .or_else(|| self.compare_base.strip_prefix("refs/remotes/"))
+                                .unwrap_or(&self.compare_base),
+                        )
+                        .width(180.)
+                        .show_ui(ui, |ui| {
+                            for branch in &repo.branches {
+                                ui.selectable_value(
+                                    &mut self.compare_base,
+                                    format!(
+                                        "refs/{}/{}",
+                                        if branch.remote { "remotes" } else { "heads" },
+                                        branch.name
+                                    ),
+                                    &branch.name,
+                                );
+                            }
+                            for commit in &repo.commits {
+                                ui.selectable_value(
+                                    &mut self.compare_base,
+                                    commit.id.clone(),
+                                    format!("{} {}", short(&commit.id), commit.subject),
+                                );
+                            }
+                        });
+                    base_picker.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::ComboBox,
+                            true,
+                            format!("Base branch: {}", self.compare_base),
+                        )
+                    });
+                    ui.label("Compare with");
+                    let compare_picker = egui::ComboBox::from_id_salt("compare_head")
+                        .selected_text(
+                            self.compare_head
+                                .strip_prefix("refs/heads/")
+                                .or_else(|| self.compare_head.strip_prefix("refs/remotes/"))
+                                .unwrap_or(&self.compare_head),
+                        )
+                        .width(180.)
+                        .show_ui(ui, |ui| {
+                            for branch in &repo.branches {
+                                ui.selectable_value(
+                                    &mut self.compare_head,
+                                    format!(
+                                        "refs/{}/{}",
+                                        if branch.remote { "remotes" } else { "heads" },
+                                        branch.name
+                                    ),
+                                    &branch.name,
+                                );
+                            }
+                            for commit in &repo.commits {
+                                ui.selectable_value(
+                                    &mut self.compare_head,
+                                    commit.id.clone(),
+                                    format!("{} {}", short(&commit.id), commit.subject),
+                                );
+                            }
+                        });
+                    compare_picker.response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::ComboBox,
+                            true,
+                            format!("Compare with: {}", self.compare_head),
+                        )
+                    });
+                    ui.checkbox(&mut self.inspector_open, "Commit details");
+                });
+
                 let mut selected = None;
+                let mut selected_file = None;
                 match &self.comparison.data {
                     None => {
                         ui.spinner();
-                        ui.label("Comparing branches and files");
+                        ui.label("Loading branch differences…");
                     }
                     Some(Err(error)) => {
                         ui.colored_label(DANGER(), error);
@@ -184,125 +230,185 @@ impl Branchroom {
                         }
                     }
                     Some(Ok(data)) => {
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(ui.available_width(), 100.),
-                            egui::Sense::hover(),
-                        );
-                        let origin = rect.left_center() + egui::vec2(20., 0.);
-                        let end = rect.right() - 20.;
-                        for (offset, count, color) in [
-                            (-25., data.left.len(), ACCENT()),
-                            (25., data.right.len(), SUCCESS()),
-                        ] {
-                            let tip = egui::pos2(end, origin.y + offset);
-                            let start = if data.ancestor.is_empty() {
-                                egui::pos2(origin.x, tip.y)
-                            } else {
-                                origin
-                            };
-                            ui.painter()
-                                .line_segment([start, tip], egui::Stroke::new(2., color));
-                            ui.painter().circle_filled(tip, 5., color);
-                            ui.painter().text(
-                                tip - egui::vec2(10., 8.),
-                                egui::Align2::RIGHT_BOTTOM,
-                                format!(
-                                    "{count} unique {}",
-                                    if count == 1 { "commit" } else { "commits" }
-                                ),
-                                egui::FontId::proportional(12.),
-                                color,
-                            );
-                        }
-                        ui.painter().circle_filled(origin, 5., MUTED());
-                        if !data.ancestor.is_empty() {
-                            let response = ui.interact(
-                                egui::Rect::from_center_size(origin, egui::vec2(24., 24.)),
-                                egui::Id::unique("compare_starting_commit"),
-                                egui::Sense::click(),
-                            );
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::Role::Button,
-                                    true,
-                                    "Select starting commit",
-                                )
+                        let base_name = self
+                            .compare_base
+                            .strip_prefix("refs/heads/")
+                            .or_else(|| self.compare_base.strip_prefix("refs/remotes/"))
+                            .unwrap_or(&self.compare_base);
+                        let compare_name = self
+                            .compare_head
+                            .strip_prefix("refs/heads/")
+                            .or_else(|| self.compare_head.strip_prefix("refs/remotes/"))
+                            .unwrap_or(&self.compare_head);
+                        surface().show(ui, |ui| {
+                            section(ui, "COMPARISON SUMMARY");
+                            ui.add_space(8.);
+                            ui.horizontal_wrapped(|ui| {
+                                badge(ui, "BASE", MUTED());
+                                ui.label(RichText::new(base_name).strong());
+                                ui.label("compared with");
+                                badge(ui, "COMPARE", ACCENT());
+                                ui.label(RichText::new(compare_name).strong());
                             });
-                            if response.clicked() {
-                                selected = Some(data.ancestor.clone());
-                            }
-                            if self.selected_commit == data.ancestor {
-                                ui.painter().circle_stroke(
-                                    origin,
-                                    9.,
-                                    egui::Stroke::new(2., ACCENT()),
-                                );
-                            }
-                        }
-
-                        ui.label(if data.ancestor.is_empty() {
-                            "These histories have no common starting commit".into()
-                        } else {
-                            format!("Branched off here: {}", short(&data.ancestor))
-                        });
-                        for (label, commits) in [
-                            ("Only in comparison branch", &data.left),
-                            ("Only in selected branch", &data.right),
-                        ] {
-                            ui.heading(label);
-                            if commits.is_empty() {
-                                subtitle(ui, "No unique commits");
-                            }
-                            egui::ScrollArea::vertical()
-                                .id_salt(label)
-                                .max_height(220.)
-                                .show_rows(ui, 28., commits.len(), |ui, range| {
-                                    for i in range {
-                                        let (id, subject) = &commits[i];
-                                        if ui
-                                            .selectable_label(self.selected_commit == *id, subject)
-                                            .clicked()
-                                        {
-                                            selected = Some(id.clone());
+                            ui.add_space(8.);
+                            ui.horizontal_wrapped(|ui| {
+                                badge(
+                                    ui,
+                                    &format!(
+                                        "{} unique {}",
+                                        data.left.len(),
+                                        if data.left.len() == 1 {
+                                            "commit"
+                                        } else {
+                                            "commits"
                                         }
-                                    }
-                                });
-                        }
-                        ui.heading("Changed files between tips");
-                        if data.files.is_empty() {
-                            subtitle(
-                                ui,
-                                if self.preview_mode {
-                                    "File differences load in a live repository"
+                                    ),
+                                    MUTED(),
+                                );
+                                badge(
+                                    ui,
+                                    &format!(
+                                        "{} unique {}",
+                                        data.right.len(),
+                                        if data.right.len() == 1 {
+                                            "commit"
+                                        } else {
+                                            "commits"
+                                        }
+                                    ),
+                                    SUCCESS(),
+                                );
+                                if data.ancestor.is_empty() {
+                                    ui.colored_label(
+                                        WARNING(),
+                                        "No common ancestor; these histories are unrelated.",
+                                    );
                                 } else {
-                                    "No file differences between these tips"
-                                },
-                            );
-                        }
-                        egui::ScrollArea::vertical()
-                            .id_salt("comparison_files")
-                            .max_height(220.)
-                            .show_rows(ui, 24., data.files.len(), |ui, range| {
-                                for i in range {
-                                    let file = &data.files[i];
-                                    if ui
-                                        .selectable_label(
-                                            self.selected_path == file.path,
-                                            file.label(),
-                                        )
-                                        .clicked()
-                                    {
-                                        self.selected_path = file.path.clone();
-                                    }
+                                    ui.label(format!(
+                                        "Shared history begins at {}",
+                                        short(&data.ancestor)
+                                    ));
                                 }
                             });
+                        });
+                        ui.add_space(12.);
+
+                        let mut show_commit_list =
+                            |ui: &mut egui::Ui, title: &str, commits: &[(String, String)]| {
+                                surface().show(ui, |ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.heading(title);
+                                        badge(ui, &commits.len().to_string(), MUTED());
+                                    });
+                                    if commits.is_empty() {
+                                        subtitle(ui, "No commits unique to this branch.");
+                                    } else {
+                                        egui::ScrollArea::vertical()
+                                            .id_salt(("compare_commits", title))
+                                            .max_height(240.)
+                                            .show_rows(ui, 40., commits.len(), |ui, range| {
+                                                for i in range {
+                                                    let (id, subject) = &commits[i];
+                                                    let response = ui
+                                                        .add_sized(
+                                                            [ui.available_width(), 36.],
+                                                            egui::Button::selectable(
+                                                                self.selected_commit == *id,
+                                                                format!(
+                                                                    "{}  {}",
+                                                                    short(id),
+                                                                    subject
+                                                                ),
+                                                            )
+                                                            .wrap(),
+                                                        )
+                                                        .on_hover_text(id);
+                                                    if response.clicked() {
+                                                        selected = Some(id.clone());
+                                                    }
+                                                }
+                                            });
+                                    }
+                                });
+                            };
+                        let available_width = ui.available_width();
+                        if available_width >= 720. {
+                            ui.columns(2, |columns| {
+                                show_commit_list(
+                                    &mut columns[0],
+                                    &format!("Only in {base_name}"),
+                                    &data.left,
+                                );
+                                show_commit_list(
+                                    &mut columns[1],
+                                    &format!("Only in {compare_name}"),
+                                    &data.right,
+                                );
+                            });
+                        } else {
+                            show_commit_list(ui, &format!("Only in {base_name}"), &data.left);
+                            ui.add_space(8.);
+                            show_commit_list(ui, &format!("Only in {compare_name}"), &data.right);
+                        }
+                        ui.add_space(12.);
+                        surface().show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.heading("Files changed between branches");
+                                badge(ui, &data.files.len().to_string(), MUTED());
+                            });
+                            subtitle(ui, "Files changed between the two selected branch tips.");
+                            if data.files.is_empty() {
+                                subtitle(
+                                    ui,
+                                    if self.preview_mode {
+                                        "File differences load in a live repository."
+                                    } else {
+                                        "These branch tips have the same file content."
+                                    },
+                                );
+                            } else {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("comparison_files")
+                                    .max_height(260.)
+                                    .show_rows(ui, 34., data.files.len(), |ui, range| {
+                                        for i in range {
+                                            let file = &data.files[i];
+                                            let response = ui
+                                                .add_sized(
+                                                    [ui.available_width(), 30.],
+                                                    egui::Button::selectable(
+                                                        self.selected_path == file.path,
+                                                        file.label(),
+                                                    )
+                                                    .truncate(),
+                                                )
+                                                .on_hover_text(&file.path);
+                                            if response.clicked() {
+                                                self.selected_path = file.path.clone();
+                                                selected_file = Some(file.path.clone());
+                                            }
+                                        }
+                                    });
+                            }
+                        });
                     }
                 }
                 if let Some(id) = selected {
                     self.selected_commit = id;
                     self.inspector_open = true;
                 }
+                if let Some(path) = selected_file {
+                    let args = process::strings(&[
+                        "diff",
+                        "--no-ext-diff",
+                        &self.compare_base,
+                        &self.compare_head,
+                        "--",
+                        &path,
+                    ]);
+                    self.detail_title = format!("Compare · {path}");
+                    self.read("git", args, ctx);
+                }
             });
-        });
     }
 }

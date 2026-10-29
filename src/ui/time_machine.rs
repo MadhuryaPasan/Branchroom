@@ -23,7 +23,8 @@ impl Branchroom {
                     "Move branch tip"
                 }
                 branchroom::operation::Kind::Reorder { .. } => "Reorder commits",
-                branchroom::operation::Kind::MoveToBranch { .. } => "Move commits to a new branch",
+                branchroom::operation::Kind::MoveToBranch { .. }
+                | branchroom::operation::Kind::MoveCommits { .. } => "Move commits to a new branch",
                 _ => "Combine commits",
             }
             .into(),
@@ -69,6 +70,9 @@ impl Branchroom {
         let Some(repo) = self.repo.clone() else {
             return;
         };
+        if !self.settings.advanced_mode {
+            self.time_machine.advanced = false;
+        }
         let writable = self.receiver.is_none() && !branchroom::safety::is_protected(&repo.root);
         let mut items = repo.timeline.clone();
         // Preview mode stays offline, with existing sample captures mapped into entries.
@@ -190,15 +194,16 @@ impl Branchroom {
                             &[],
                         );
                     }
-                    if ui
-                        .selectable_label(self.time_machine.advanced, "Advanced")
-                        .clicked()
+                    if self.settings.advanced_mode
+                        && ui
+                            .selectable_label(self.time_machine.advanced, "Advanced")
+                            .clicked()
                     {
                         self.time_machine.advanced = !self.time_machine.advanced;
                     }
                 });
             });
-        egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(20)).show(ui,|ui|{
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
             egui::ScrollArea::vertical().id_salt("action_timeline").show(ui,|ui|{
                 if let Some(plan)=self.time_machine.plan.clone(){
                     surface().show(ui,|ui|{

@@ -109,10 +109,6 @@ impl Branchroom {
     pub(super) fn chrome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let writable = !branchroom::safety::is_protected(&self.path());
         let compact = ui.available_width() < 1200.;
-        if compact && !self.was_compact {
-            self.inspector_open = false;
-        }
-        self.was_compact = compact;
         egui::Panel::top("workspace_header")
             .frame(egui::Frame::new().fill(SIDEBAR()).inner_margin(12))
             .show(ui, |ui| {
@@ -133,6 +129,11 @@ impl Branchroom {
                                     self.query.clear();
                                     ui.close();
                                 }
+                            }
+                            if self.settings.advanced_mode && ui.button("Command center").clicked()
+                            {
+                                self.page = Page::Tools;
+                                ui.close();
                             }
                         });
                     }
@@ -262,7 +263,11 @@ impl Branchroom {
                 .lock()
                 .map(|p| p.clone())
                 .unwrap_or_default();
-            if !progress.is_empty() {
+            if !progress.is_empty()
+                || self
+                    .job_started
+                    .is_some_and(|started| started.elapsed() > Duration::from_millis(800))
+            {
                 egui::Area::new(egui::Id::unique("operation_progress_toast"))
                     .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16., -48.))
                     .order(egui::Order::Foreground)
@@ -270,7 +275,11 @@ impl Branchroom {
                         surface().show(ui, |ui| {
                             ui.set_max_width((ctx.content_rect().width() - 64.).clamp(160., 340.));
                             ui.label(RichText::new(&self.busy).strong());
-                            ui.label(progress);
+                            if !progress.is_empty() {
+                                ui.label(progress);
+                            } else {
+                                ui.spinner();
+                            }
                         });
                     });
             }
@@ -330,11 +339,21 @@ impl Branchroom {
                     ] {
                         self.navigation_row(ui, page, kind);
                     }
+                    if self.settings.advanced_mode {
+                        self.navigation_row(ui, Page::Tools, Icon::Code);
+                    }
                 });
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(0)).show(ui, |ui| {
             ui.add_enabled_ui(self.pending.is_none() && self.form.is_none() && (!self.manipulation.active()||egui::DragAndDrop::has_payload_of_type::<manipulation::Payload>(ctx)), |ui| {
                 if self.repo.is_none() && !matches!(self.page, Page::Remotes | Page::Settings) { self.welcome(ui, ctx); return; }
+                if self.error {
+                    egui::Frame::new().fill(SURFACE()).inner_margin(12).show(ui,|ui|{
+                        ui.horizontal_wrapped(|ui|{ui.colored_label(DANGER(),"Action needs attention");if ui.button("Show details").clicked(){self.activity_open=true;}
+                        if ui.button("Dismiss error").clicked(){self.error=false;}});
+                        if ctx.content_rect().height()>=500.{ui.add(egui::Label::new(human_error(&self.output)).wrap());}
+                    });
+                }
                 if let Some(repo) = &self.repo {
                     let count = repo.changes.iter().filter(|c| c.conflict()).count();
                     if count > 0 || !repo.operation.is_empty() {
@@ -369,23 +388,25 @@ impl Branchroom {
 
                 if matches!(self.page, Page::History | Page::Branches | Page::Merge | Page::Compare) {
                     self.load_graph_context(ctx);
-                    ui.horizontal_wrapped(|ui| {
+                    egui::Frame::new().inner_margin(egui::Margin::symmetric(16,0)).show(ui,|ui|{ui.horizontal_wrapped(|ui| {
                         for (page, label) in [(Page::History, "Commits"), (Page::Branches, "Branch map"), (Page::Compare, "Compare")] {
                             if ui.selectable_label(self.page == page, label).clicked() { self.page = page; }
                         }
+                        if self.settings.advanced_mode {
                         ui.menu_button("Advanced", |ui| {
                             if ui.button("Preview a graph action").clicked(){self.open_graph_form();ui.close();}
                             if ui.button("History operation forms").clicked(){self.page=Page::Compare;self.comparison.advanced=true;ui.close();}
                             if ui.button("Merge branches").clicked() { self.page = Page::Merge; ui.close(); }
                         });
-                    });
+                        }
+                    });});
                 }
                 match self.page {
                     Page::History => self.history(ui, ctx), Page::Snapshots => self.snapshots(ui, ctx), Page::Changes => self.changes(ui, ctx),
-                    Page::Compare => { egui::Frame::new().inner_margin(20).show(ui, |ui| self.compare(ui, ctx)); },
-                    Page::Merge => { egui::Frame::new().inner_margin(20).show(ui, |ui| self.merge_page(ui, ctx)); },
+                    Page::Compare => { egui::Frame::new().inner_margin(16).show(ui, |ui| self.compare(ui, ctx)); },
+                    Page::Merge => { egui::Frame::new().inner_margin(16).show(ui, |ui| self.merge_page(ui, ctx)); },
                     Page::Branches => self.branches(ui, ctx), Page::Stashes => self.snapshots(ui, ctx),
-                    page => { egui::Frame::new().inner_margin(24).show(ui, |ui| { egui::ScrollArea::vertical().id_salt("secondary_page").show(ui, |ui| match page { Page::Conflicts => self.conflicts(ui,ctx), Page::Remotes => self.remotes(ui,ctx), Page::Github => self.github(ui,ctx), Page::Tools => self.tools(ui,ctx), Page::Settings => self.preferences(ui), _ => {} }); }); }
+                    page => { egui::Frame::new().inner_margin(16).show(ui, |ui| { egui::ScrollArea::vertical().id_salt("secondary_page").show(ui, |ui| match page { Page::Conflicts => self.conflicts(ui,ctx), Page::Remotes => self.remotes(ui,ctx), Page::Github => self.github(ui,ctx), Page::Tools => self.tools(ui,ctx), Page::Settings => self.preferences(ui), _ => {} }); }); }
                 }
             });
         });
@@ -507,45 +528,319 @@ impl Branchroom {
             ui.add(
                 egui::TextEdit::singleline(&mut self.command_bar_query)
                     .id(egui::Id::unique("command_bar_search"))
-                    .hint_text("Search actions")
+                    .hint_text("Search actions or describe what you need")
                     .desired_width(f32::INFINITY),
             );
             let query = self.command_bar_query.to_lowercase();
-            for (label, page) in [
-                ("Open graph", Page::History),
-                ("Review changes", Page::Changes),
-                ("Open pull requests", Page::Github),
-                ("Open Time Machine", Page::Snapshots),
-                ("Manage branches", Page::Branches),
-                ("Open repositories", Page::Remotes),
-                ("Open settings", Page::Settings),
-                ("Advanced commands", Page::Tools),
-            ] {
-                if label.to_lowercase().contains(&query) && ui.button(label).clicked() {
-                    self.page = page;
-                    self.command_bar_open = false;
-                }
-            }
-            if !query.is_empty()
-                && ![
-                    "open graph",
-                    "review changes",
-                    "open pull requests",
-                    "open time machine",
-                    "manage branches",
-                    "open repositories",
-                    "open settings",
-                    "advanced commands",
-                ]
-                .iter()
-                .any(|label| label.contains(&query))
-            {
-                subtitle(ui, "No matching actions. Try a shorter search.");
-            }
+            let commands = [
+                (
+                    "Workspace",
+                    "Open graph",
+                    "graph commits history",
+                    Page::History,
+                    "git log --graph --oneline --decorate --all",
+                ),
+                (
+                    "Workspace",
+                    "Review changes",
+                    "changes stage files diff",
+                    Page::Changes,
+                    "git status --short",
+                ),
+                (
+                    "Workspace",
+                    "Open pull requests",
+                    "pull requests github review",
+                    Page::Github,
+                    "gh pr list",
+                ),
+                (
+                    "Workspace",
+                    "Create a pull request",
+                    "create pull request propose",
+                    Page::Github,
+                    "gh pr create",
+                ),
+                (
+                    "Workspace",
+                    "Open Time Machine",
+                    "time machine snapshots undo recovery",
+                    Page::Snapshots,
+                    "git reflog --date=relative",
+                ),
+                (
+                    "Workspace",
+                    "Manage branches",
+                    "branch map rename delete",
+                    Page::Branches,
+                    "git branch --list",
+                ),
+                (
+                    "Workspace",
+                    "Open repositories",
+                    "clone remotes worktrees",
+                    Page::Remotes,
+                    "git remote -v",
+                ),
+                (
+                    "Workspace",
+                    "Open settings",
+                    "preferences appearance",
+                    Page::Settings,
+                    "git config --list",
+                ),
+                (
+                    "Advanced",
+                    "Advanced commands",
+                    "terminal raw git",
+                    Page::Tools,
+                    "git help -a",
+                ),
+                (
+                    "Fix it",
+                    "Move unpublished commits to a new branch",
+                    "move unpublished commits new branch",
+                    Page::History,
+                    "git rebase -i <base-commit>",
+                ),
+                (
+                    "Fix it",
+                    "I committed to the wrong branch",
+                    "wrong branch move commits",
+                    Page::History,
+                    "git rebase -i <base-commit>",
+                ),
+                (
+                    "Fix it",
+                    "Undo the last commit safely",
+                    "undo last commit revert",
+                    Page::History,
+                    "git revert <commit>",
+                ),
+                (
+                    "Fix it",
+                    "Undo a pushed commit safely",
+                    "undo pushed commit revert",
+                    Page::History,
+                    "git revert <commit>",
+                ),
+                (
+                    "Fix it",
+                    "Split a commit",
+                    "split commit separate changes",
+                    Page::History,
+                    "git reset --mixed HEAD^",
+                ),
+                (
+                    "Fix it",
+                    "Rename a branch",
+                    "rename branch",
+                    Page::Branches,
+                    "git branch -m <new-name>",
+                ),
+                (
+                    "Fix it",
+                    "Recover a deleted branch",
+                    "recover deleted branch",
+                    Page::Snapshots,
+                    "git reflog",
+                ),
+            ];
+            egui::ScrollArea::vertical()
+                .id_salt(("command_results",&query))
+                .max_height((ctx.content_rect().height() - 150.).max(140.))
+                .show(ui, |ui| {
+                    for (category, label, keywords, page, git_command) in commands {
+                        if category == "Advanced" && !self.settings.advanced_mode {
+                            continue;
+                        }
+                        let matches=command_matches(&query,label,keywords);
+                        if matches {
+                            if ui.button(label).clicked() {
+                                if category == "Fix it" {
+                                    self.launch_fix(label, ctx);
+                                    self.command_bar_open = false;
+                                    continue;
+                                }
+                                self.page = page;
+                                if page == Page::Github {
+                                    self.pr_tab =
+                                        if label == "Create a pull request" { 3 } else { 0 };
+                                    self.prs_requested = false;
+                                }
+                                self.command_bar_open = false;
+                            }
+                            egui::CollapsingHeader::new("Show Git command")
+                                .id_salt(("command_learning", label))
+                                .show(ui, |ui| {
+                                    ui.label(RichText::new(git_command).monospace());
+                                    subtitle(
+                                        ui,
+                                        "Review placeholders and effects before running commands in Advanced mode.",
+                                    );
+                                });
+                        }
+                    }
+                    if !query.is_empty()
+                        && !commands.iter().any(|entry| {
+                            if entry.0 == "Advanced" && !self.settings.advanced_mode {
+                                return false;
+                            }
+                            command_matches(&query,entry.1,entry.2)
+                        })
+                    {
+                        subtitle(ui, "No matching actions. Try a shorter search.");
+                    }
+                });
         });
         if response.should_close() {
             self.command_bar_open = false;
         }
+    }
+
+    fn launch_fix(&mut self, label: &str, ctx: &egui::Context) {
+        let Some(repo) = self.repo.as_ref().cloned() else {
+            self.report(Err("Open a repository before starting a fix.".into()));
+            return;
+        };
+        match label {
+            "I committed to the wrong branch" | "Move unpublished commits to a new branch" => {
+                let count = self
+                    .command_bar_query
+                    .split_whitespace()
+                    .find_map(|w| w.parse::<usize>().ok());
+                let words = self
+                    .command_bar_query
+                    .split_whitespace()
+                    .collect::<Vec<_>>();
+                let name = words
+                    .windows(2)
+                    .find(|w| {
+                        w[0].eq_ignore_ascii_case("branch") && !["a", "new", "to"].contains(&w[1])
+                    })
+                    .map(|w| w[1].trim_matches(['\'', '"']).to_owned())
+                    .unwrap_or_else(|| "recovered-work".into());
+                if let Some(count) = count.or(if label == "I committed to the wrong branch" {
+                    Some(1)
+                } else {
+                    None
+                }) {
+                    self.begin_graph_action(branchroom::operation::Kind::MoveCommits {
+                        name,
+                        count,
+                    });
+                } else {
+                    self.begin_graph_action(branchroom::operation::Kind::MoveToBranch { name });
+                }
+            }
+            "Undo the last commit safely" => {
+                self.begin_graph_action(branchroom::operation::Kind::Undo)
+            }
+            "Undo a pushed commit safely" => {
+                let Some(commit) = repo.branch_commits.first() else {
+                    self.report(Err(
+                        "There is no commit on the current branch to revert.".into()
+                    ));
+                    return;
+                };
+                self.pending = Some(Pending {
+                    title: "Revert the latest commit".into(),
+                    explanation: format!(
+                        "Create a new commit that reverses {} on {}. The original history stays intact. If it was pushed, publish the revert commit afterward.",
+                        commit.id.chars().take(12).collect::<String>(),
+                        repo.branch
+                    ),
+                    task: Task::Revert {
+                        reference: commit.id.clone(),
+                        mainline: None,
+                    },
+                });
+            }
+            "Split a commit" => {
+                let Some(commit) = repo.branch_commits.first() else {
+                    self.report(Err(
+                        "There is no commit on the current branch to split.".into()
+                    ));
+                    return;
+                };
+                if commit.parents.len() > 1 {
+                    self.report(Err(
+                        "A merge commit cannot be split with this guided action. Use the reviewed graph tools instead."
+                            .into(),
+                    ));
+                    return;
+                }
+                self.page = Page::Changes;
+                self.begin_graph_action(if let Some(parent) = commit.parents.first() {
+                    branchroom::operation::Kind::Reset {
+                        commit: parent.clone(),
+                    }
+                } else {
+                    branchroom::operation::Kind::Undo
+                });
+            }
+            "Rename a branch" => {
+                if repo.branch == "Detached HEAD" {
+                    self.report(Err("Switch to a branch before renaming it.".into()));
+                    return;
+                }
+                self.form(
+                    "Rename branch",
+                    "Review the new name, then rename this local branch.",
+                    "git",
+                    &["branch", "-m", &repo.branch],
+                    &[("New branch name", "")],
+                    &[],
+                );
+            }
+            "Recover a deleted branch" => {
+                self.page = Page::Snapshots;
+                if let Some(item) = repo.timeline.iter().find(|item| {
+                    let kind = item.kind.to_lowercase();
+                    kind.contains("branch") && (kind.contains("delet") || kind.contains("recover"))
+                }) {
+                    self.time_machine.selected = item.key.clone();
+                    self.time_machine.target.clear();
+                    self.time_machine.graph.clear();
+                    self.time_machine.patch.clear();
+                    self.time_machine.loading = !self.preview_mode;
+                    self.execute(
+                        Task::TimelineLoad {
+                            item: item.clone(),
+                            before: false,
+                        },
+                        ctx,
+                    );
+                } else if let Some(saved) = repo.recovery_heads.first() {
+                    self.time_machine.selected = saved.reference.clone();
+                    self.selected_snapshot = saved.reference.clone();
+                    let item = branchroom::timeline::Item {
+                        key: saved.reference.clone(),
+                        reference: saved.reference.clone(),
+                        target: saved.id.clone(),
+                        label: saved.label.clone(),
+                        date: saved.date.clone(),
+                        kind: "Safety point".into(),
+                        ..Default::default()
+                    };
+                    self.time_machine.loading = !self.preview_mode;
+                    self.execute(
+                        Task::TimelineLoad {
+                            item,
+                            before: false,
+                        },
+                        ctx,
+                    );
+                } else {
+                    self.report(Err(
+                        "No deleted branch recovery point is available in Time Machine.".into(),
+                    ));
+                    return;
+                }
+            }
+            _ => self.report(Err(format!("This fix is not available: {label}"))),
+        }
+        ctx.request_repaint();
     }
 
     fn branch_picker(&mut self, ui: &mut egui::Ui, writable: bool) {
@@ -767,17 +1062,19 @@ impl Branchroom {
                         );
                         ui.close();
                     }
-                    ui.menu_button("Advanced", |ui| {
-                        if ui.button("Pull (fast-forward)…").clicked() {
-                            self.propose(
-                                "Pull updates",
-                                "Bring the current branch up to date if it can be fast-forwarded.",
-                                &["pull", "--ff-only"],
-                            );
-                            ui.close();
-                        }
-                        self.publish_controls(ui, writable);
-                    });
+                    if self.settings.advanced_mode {
+                        ui.menu_button("Advanced", |ui| {
+                            if ui.button("Pull (fast-forward)…").clicked() {
+                                self.propose(
+                                    "Pull updates",
+                                    "Bring the current branch up to date if it can be fast-forwarded.",
+                                    &["pull", "--ff-only"],
+                                );
+                                ui.close();
+                            }
+                            self.publish_controls(ui, writable);
+                        });
+                    }
                 });
             },
         );
@@ -876,7 +1173,7 @@ impl Branchroom {
             }
         });
     }
-    pub(super) fn patch_drawer(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn patch_drawer(&mut self, ui: &mut egui::Ui, wide_region_reserved: bool) {
         if !self.detail_open || self.detail_page != self.page {
             return;
         }
@@ -894,17 +1191,17 @@ impl Branchroom {
             if !open {
                 self.detail_open = false;
             }
-            return;
+        } else if !wide_region_reserved {
+            let max_height = (ui.available_height() * 0.65).max(120.);
+            egui::Panel::bottom("patch_drawer")
+                .resizable(true)
+                .default_size(300_f32.min(max_height))
+                .size_range(110.0..=max_height)
+                .frame(egui::Frame::new().fill(SURFACE()).inner_margin(12))
+                .show(ui, |ui| self.patch_preview_content(ui, true));
         }
-        let max_height = (ui.available_height() * 0.65).max(120.);
-        egui::Panel::bottom("patch_drawer")
-            .resizable(true)
-            .default_size(300_f32.min(max_height))
-            .size_range(110.0..=max_height)
-            .frame(egui::Frame::new().fill(SURFACE()).inner_margin(12))
-            .show(ui, |ui| self.patch_preview_content(ui, true));
     }
-    fn patch_preview_content(&mut self, ui: &mut egui::Ui, show_heading: bool) {
+    pub(super) fn patch_preview_content(&mut self, ui: &mut egui::Ui, show_heading: bool) {
         ui.horizontal_wrapped(|ui| {
             if show_heading {
                 ui.label(RichText::new("Change preview").strong().size(14.));
@@ -947,4 +1244,74 @@ impl Branchroom {
         }
         patch_preview::show(ui, &self.detail, self.patch_raw);
     }
+}
+
+fn command_matches(query: &str, label: &str, keywords: &str) -> bool {
+    let haystack = format!("{} {keywords}", label.to_lowercase());
+    let is_move = label.contains("new branch") || label.contains("wrong branch");
+    let words = query.split_whitespace();
+    for word in words {
+        if ["i", "the", "a", "to", "my", "on", "last", "new", "please"].contains(&word)
+            || word.parse::<usize>().is_ok()
+        {
+            continue;
+        }
+        if is_move && word == "branch" {
+            return haystack.contains("branch");
+        }
+        if !haystack.contains(word)
+            && !haystack.split_whitespace().any(|candidate| {
+                let mut needle = word.chars();
+                let mut next = needle.next();
+                for c in candidate.chars() {
+                    if next == Some(c) {
+                        next = needle.next();
+                    }
+                }
+                next.is_none()
+            })
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn human_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("not a git repository") {
+        return "This folder is not a Git repository. Open an existing repository or create one in Repositories".into();
+    }
+    if lower.contains("authentication")
+        || lower.contains("not logged")
+        || lower.contains("bad credentials")
+    {
+        return "GitHub could not authenticate this request. Sign in from Pull requests and try again".into();
+    }
+    if lower.contains("could not resolve host")
+        || lower.contains("unable to access")
+        || lower.contains("network is unreachable")
+    {
+        return "The remote could not be reached. Check your connection and remote address, then try again".into();
+    }
+    if lower.contains("permission denied") {
+        return "The action was refused. Check your file or repository permissions, then try again"
+            .into();
+    }
+    raw.lines()
+        .find(|line| {
+            !line.trim().is_empty()
+                && !line.contains("exited with")
+                && !line.starts_with("git exited")
+                && !line.starts_with("gh exited")
+        })
+        .map(|line| {
+            line.trim_start_matches("fatal: ")
+                .trim_start_matches("error: ")
+                .to_owned()
+        })
+        .unwrap_or_else(|| {
+            "The action could not finish. Open the details, fix the reported issue and try again"
+                .into()
+        })
 }

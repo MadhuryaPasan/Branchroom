@@ -1,3 +1,5 @@
+> Current graph-first workspace and final verification: [Final UI review](FINAL-UI-REVIEW-2026-10-29.md). Older counts and snapshot-tree terminology below are historical; dedicated-feature limitations remain explicit.
+
 # Git / GitHub Desktop / GitHub web workflow review
 
 Reviewed 26 October 2026 for Branchroom 0.2.0-rc.1. “Implemented” describes a dedicated workflow, not a guarantee of every option or completed live acceptance. A generic command runner does not establish GUI parity.

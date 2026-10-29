@@ -1,3 +1,5 @@
+> Current UI/release evidence: [Final review, 29 October 2026](FINAL-UI-REVIEW-2026-10-29.md). The audit below retains earlier hardening results and historical test counts.
+
 # Branchroom production readiness audit
 
 **Build:** 0.2.0-rc.1 · **Review date:** 26 October 2026 · **Platform exercised:** Windows x64, Git 2.55.0.windows.3, Rust 1.99.0.

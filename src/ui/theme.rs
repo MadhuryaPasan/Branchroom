@@ -579,3 +579,19 @@ mod bundled_font_tests {
         harness.run_steps(3);
     }
 }
+
+/// A sibling pane owns its geometry; child content cannot resize or cover its neighbours.
+pub(super) fn bounded_pane(
+    parent: &mut egui::Ui,
+    rect: egui::Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+) -> egui::Ui {
+    let mut child = parent.new_child(
+        egui::UiBuilder::new()
+            .id_salt(id)
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    child.set_clip_rect(parent.clip_rect().intersect(rect));
+    child
+}

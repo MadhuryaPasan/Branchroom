@@ -17,21 +17,29 @@ pub struct PullRequest {
     pub is_draft: bool,
     pub state: String,
 }
-pub fn pull_requests(root: &Path) -> Result<Vec<PullRequest>> {
-    let output = process::stdout(
-        "gh",
-        root,
-        &process::strings(&[
-            "pr",
-            "list",
-            "--limit",
-            "100",
-            "--json",
-            "number,title,headRefName,baseRefName,url,isDraft,state",
-        ]),
-    )?;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullRequestFilter {
+    #[default]
+    Open,
+    Mine,
+    ReviewRequested,
+}
+pub fn pull_requests(root: &Path, filter: PullRequestFilter) -> Result<Vec<PullRequest>> {
+    let mut args = process::strings(&["pr", "list", "--state", "open", "--limit", "100"]);
+    match filter {
+        PullRequestFilter::Open => {}
+        PullRequestFilter::Mine => args.extend(process::strings(&["--author", "@me"])),
+        PullRequestFilter::ReviewRequested => {
+            args.extend(process::strings(&["--search", "review-requested:@me"]))
+        }
+    }
+    args.extend(process::strings(&[
+        "--json",
+        "number,title,headRefName,baseRefName,url,isDraft,state",
+    ]));
+    let output = process::stdout("gh", root, &args)?;
     serde_json::from_str(&output)
-        .map_err(|e| format!("Cannot read pull requests: {e}. Reload the list."))
+        .map_err(|e| format!("Cannot read pull requests: {e}. Retry the list."))
 }
 pub fn require_idle(root: &Path) -> Result<()> {
     crate::safety::ensure_writable(root)?;

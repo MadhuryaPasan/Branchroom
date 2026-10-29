@@ -30,6 +30,7 @@ pub(super) struct Manipulation {
     was_dragging: bool,
     pub(super) advanced: bool,
     mode: usize,
+    mainline: usize,
     source: String,
     target: String,
     order: String,
@@ -71,6 +72,9 @@ fn empty_message(kind: &Kind) -> bool {
 fn title(kind: &Kind) -> &'static str {
     match kind {
         Kind::Undo => "Undo latest commit",
+        Kind::RenameBranch { .. } => "Rename a branch",
+        Kind::BranchFrom { .. } => "Branch from a saved commit",
+        Kind::Revert { .. } => "Undo changes safely",
         Kind::Merge { .. } => "Merge branches",
         Kind::CherryPick { .. } => "Copy a commit",
         Kind::Reorder { .. } => "Reorder commits",
@@ -78,7 +82,7 @@ fn title(kind: &Kind) -> &'static str {
         Kind::Reset { .. } => "Move the branch tip",
         Kind::Commit { .. } => "Commit included changes",
         Kind::Amend { .. } => "Add changes to a commit",
-        Kind::MoveToBranch { .. } => "Move commits to a new branch",
+        Kind::MoveToBranch { .. } | Kind::MoveCommits { .. } => "Move commits to a new branch",
     }
 }
 fn ghost(
@@ -195,6 +199,13 @@ impl Branchroom {
     }
     pub(super) fn reviewed_graph_kind(&self, task: &Task) -> Option<Kind> {
         match task {
+            Task::Revert {
+                reference,
+                mainline,
+            } => Some(Kind::Revert {
+                commit: reference.clone(),
+                mainline: *mainline,
+            }),
             Task::Merge { target, reference } => Some(Kind::Merge {
                 source: reference.clone(),
                 target: format!("refs/heads/{target}"),
@@ -222,6 +233,26 @@ impl Branchroom {
                     order: order.clone(),
                 }),
             },
+            Task::Command { program, args, .. }
+                if program == "git" && args.first().is_some_and(|a| a == "branch") =>
+            {
+                if args.len() == 4
+                    && args[1] == "-m"
+                    && self.repo.as_ref().is_some_and(|r| r.branch == args[2])
+                {
+                    Some(Kind::RenameBranch {
+                        name: args[3].clone(),
+                    })
+                } else if args.len() == 3 && !args[1].starts_with('-') && !args[2].starts_with('-')
+                {
+                    Some(Kind::BranchFrom {
+                        name: args[1].clone(),
+                        commit: args[2].clone(),
+                    })
+                } else {
+                    None
+                }
+            }
             Task::Command { program, args, .. }
                 if program == "git"
                     && !args.iter().any(|a| {
@@ -584,7 +615,9 @@ impl Branchroom {
                             .add_enabled(ready, egui::Button::new("Confirm action").fill(PRIMARY()))
                             .clicked();
                         cancel = ui.button("Cancel preview").clicked();
-                        if ui.button("Advanced form").clicked() {
+                        if self.settings.advanced_mode
+                            && ui.button("Advanced form").clicked()
+                        {
                             self.open_graph_form();
                         }
                     });
@@ -631,6 +664,21 @@ impl Branchroom {
                                 .changed();
                         });
                     }
+                    if let Some(Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. }) =
+                        &mut self.manipulation.draft
+                    {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("New branch");
+                            changed |= ui
+                                .add(
+                                    egui::TextEdit::singleline(name)
+                                        .desired_width(240.)
+                                        .hint_text("feature/recovered-work"),
+                                )
+                                .changed();
+                        });
+                    }
+                    if let Some(Kind::MoveCommits{count,..})=&mut self.manipulation.draft{ui.horizontal(|ui|{ui.label("Recent commits");changed|=ui.add(egui::DragValue::new(count).range(1..=200)).changed();});}
                     if changed {
                         self.manipulation.review = None;
                         self.manipulation.error = None;
@@ -774,11 +822,30 @@ impl Branchroom {
                 self.manipulation.target = commit;
                 self.manipulation.message = message;
             }
+            Some(Kind::Revert { commit, mainline }) => {
+                self.manipulation.mode = 10;
+                self.manipulation.target = commit;
+                self.manipulation.mainline = mainline.unwrap_or(0);
+            }
+            Some(Kind::RenameBranch { name }) => {
+                self.manipulation.mode = 12;
+                self.manipulation.new_branch = name;
+            }
+            Some(Kind::BranchFrom { name, commit }) => {
+                self.manipulation.mode = 13;
+                self.manipulation.new_branch = name;
+                self.manipulation.target = commit;
+            }
             Some(Kind::Undo) => self.manipulation.mode = 7,
             Some(Kind::SquashRange { count, message }) => {
                 self.manipulation.mode = 8;
                 self.history_steps = count;
                 self.manipulation.message = message;
+            }
+            Some(Kind::MoveCommits { name, count }) => {
+                self.manipulation.mode = 11;
+                self.manipulation.new_branch = name;
+                self.history_steps = count;
             }
             Some(Kind::MoveToBranch { name }) => {
                 self.manipulation.mode = 9;
@@ -792,6 +859,18 @@ impl Branchroom {
         let kind = self.manipulation.draft.as_ref();
         let branch = self.repo.as_ref().map(|r| r.branch.as_str()).unwrap_or("");
         match kind {
+            Some(Kind::RenameBranch { name }) => {
+                process::strings(&["branch", "-m", &self.repo.as_ref().unwrap().branch, name])
+            }
+            Some(Kind::BranchFrom { name, commit }) => process::strings(&["branch", name, commit]),
+            Some(Kind::Revert { commit, mainline }) => {
+                let mut args = process::strings(&["revert", "--no-edit"]);
+                if let Some(n) = mainline {
+                    args.extend(["-m".into(), n.to_string()]);
+                }
+                args.push(commit.clone());
+                args
+            }
             Some(Kind::Merge { source, target }) => {
                 let target = target.strip_prefix("refs/heads/").unwrap_or(target);
                 if target != branch {
@@ -818,7 +897,9 @@ impl Branchroom {
                     process::strings(&["commit", "--fixup", commit])
                 }
             }
-            Some(Kind::MoveToBranch { name }) => process::strings(&["switch", "-c", name]),
+            Some(Kind::MoveToBranch { name } | Kind::MoveCommits { name, .. }) => {
+                process::strings(&["switch", "-c", name])
+            }
             Some(Kind::Squash { target, .. }) => {
                 process::strings(&["rebase", "--interactive", &format!("{target}^")])
             }
@@ -835,7 +916,7 @@ impl Branchroom {
         if !self.manipulation.advanced {
             return;
         }
-        const LABELS: [&str; 10] = [
+        const LABELS: [&str; 14] = [
             "Merge",
             "Cherry-pick",
             "Reorder",
@@ -846,6 +927,10 @@ impl Branchroom {
             "Undo latest commit",
             "Squash recent range",
             "Move commits to a new branch",
+            "Revert changes safely",
+            "Move a number of commits",
+            "Rename branch",
+            "Branch from commit",
         ];
         let mut open = true;
         let mut action = None;
@@ -853,16 +938,16 @@ impl Branchroom {
         egui::Window::new("Advanced graph action").open(&mut open).default_width(470.).max_height((ctx.content_rect().height()-60.).max(180.)).vscroll(true).show(ctx,|ui|{
             let previous=self.manipulation.mode;
             egui::ComboBox::from_label("Action").selected_text(LABELS[self.manipulation.mode]).show_ui(ui,|ui|{for(index,label)in LABELS.iter().enumerate(){ui.selectable_value(&mut self.manipulation.mode,index,*label);}});
-            if previous!=self.manipulation.mode {self.manipulation.target=if matches!(self.manipulation.mode,3|4|6){self.selected_commit.clone()}else{self.repo.as_ref().map(|r|format!("refs/heads/{}",r.branch)).unwrap_or_default()};}
+            if previous!=self.manipulation.mode {self.manipulation.target=if matches!(self.manipulation.mode,3|4|6|10){self.selected_commit.clone()}else{self.repo.as_ref().map(|r|format!("refs/heads/{}",r.branch)).unwrap_or_default()};}
             if self.manipulation.target.is_empty(){self.manipulation.target=self.repo.as_ref().map(|r|format!("refs/heads/{}",r.branch)).unwrap_or_default();}
             if self.manipulation.source.is_empty()&&self.manipulation.mode==0{self.manipulation.source=self.repo.as_ref().map(|r|r.base.clone()).unwrap_or_default();}
             if matches!(self.manipulation.mode,0|1|3){
                 ui.label("Source branch or commit");ui.add(egui::TextEdit::singleline(&mut self.manipulation.source).hint_text("Branch name or commit ID").desired_width(f32::INFINITY));
                 if matches!(self.manipulation.mode,1|3)&&ui.button("Use selected commit as source").clicked(){self.manipulation.source=self.selected_commit.clone();}
             }
-            if matches!(self.manipulation.mode,0|1|3|4|6){
+            if matches!(self.manipulation.mode,0|1|3|4|6|10|13){
                 ui.label("Destination branch or commit");ui.add(egui::TextEdit::singleline(&mut self.manipulation.target).hint_text("Branch name or commit ID").desired_width(f32::INFINITY));
-                if matches!(self.manipulation.mode,3|4|6)&&ui.button("Use selected commit as destination").clicked(){self.manipulation.target=self.selected_commit.clone();}
+                if matches!(self.manipulation.mode,3|4|6|10)&&ui.button("Use selected commit as destination").clicked(){self.manipulation.target=self.selected_commit.clone();}
             }
             if matches!(self.manipulation.mode,2|8){ui.horizontal_wrapped(|ui|{ui.label("Recent commits");ui.add(egui::DragValue::new(&mut self.history_steps).range(1..=200));});}
             if self.manipulation.mode==2 {
@@ -870,10 +955,12 @@ impl Branchroom {
                 ui.label("Commit IDs, oldest first, one per line");ui.add(egui::TextEdit::multiline(&mut self.manipulation.order).desired_rows(5).desired_width(f32::INFINITY).hint_text("Commit IDs in the desired order"));
             }
             if matches!(self.manipulation.mode,3|5|6|8){ui.label("Commit message");ui.add(egui::TextEdit::multiline(&mut self.manipulation.message).desired_rows(3).desired_width(f32::INFINITY).hint_text("Describe the change"));}
-            if self.manipulation.mode==9{ui.label("New branch name");ui.add(egui::TextEdit::singleline(&mut self.manipulation.new_branch).hint_text("feature/my-change").desired_width(f32::INFINITY));}
+            if matches!(self.manipulation.mode,9|11|12|13){ui.label("New branch name");ui.add(egui::TextEdit::singleline(&mut self.manipulation.new_branch).hint_text("feature/my-change").desired_width(f32::INFINITY));}
+            if self.manipulation.mode==10{ui.label("Keep merge side (0 for a normal commit)");ui.add(egui::DragValue::new(&mut self.manipulation.mainline).range(0..=20));}
+            if self.manipulation.mode==11{ui.label("Recent commits to move");ui.add(egui::DragValue::new(&mut self.history_steps).range(1..=200));}
             subtitle(ui,"These controls use the same forecast and safety checks as dragging");
             if ui.button("Preview action").clicked(){let m=&self.manipulation;action=Some(match m.mode{
-                0=>Kind::Merge{source:m.source.clone(),target:m.target.clone()},1=>Kind::CherryPick{commit:m.source.clone(),target:m.target.clone()},2=>Kind::Reorder{order:m.order.lines().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect()},3=>Kind::Squash{source:m.source.clone(),target:m.target.clone(),message:m.message.clone()},4=>Kind::Reset{commit:m.target.clone()},5=>Kind::Commit{message:m.message.clone()},6=>Kind::Amend{commit:m.target.clone(),message:m.message.clone()},7=>Kind::Undo,8=>Kind::SquashRange{count:self.history_steps,message:m.message.clone()},_=>Kind::MoveToBranch{name:m.new_branch.clone()}});}
+                0=>Kind::Merge{source:m.source.clone(),target:m.target.clone()},1=>Kind::CherryPick{commit:m.source.clone(),target:m.target.clone()},2=>Kind::Reorder{order:m.order.lines().map(str::trim).filter(|s|!s.is_empty()).map(str::to_owned).collect()},3=>Kind::Squash{source:m.source.clone(),target:m.target.clone(),message:m.message.clone()},4=>Kind::Reset{commit:m.target.clone()},5=>Kind::Commit{message:m.message.clone()},6=>Kind::Amend{commit:m.target.clone(),message:m.message.clone()},7=>Kind::Undo,8=>Kind::SquashRange{count:self.history_steps,message:m.message.clone()},10=>Kind::Revert{commit:m.target.clone(),mainline:if m.mainline==0{None}else{Some(m.mainline)}},11=>Kind::MoveCommits{name:m.new_branch.clone(),count:self.history_steps},12=>Kind::RenameBranch{name:m.new_branch.clone()},13=>Kind::BranchFrom{name:m.new_branch.clone(),commit:m.target.clone()},_=>Kind::MoveToBranch{name:m.new_branch.clone()}});}
             egui::CollapsingHeader::new("Exact Git command fallback").show(ui,|ui|{subtitle(ui,"For custom tools or flags, review the exact command in Command center. Writes require typed confirmation and retain available safety points");if ui.button("Open exact Git command form").clicked(){raw=Some(self.raw_suggestion());}});
         });
         self.manipulation.advanced = open;
