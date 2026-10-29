@@ -883,26 +883,14 @@ pub fn state_graph(root: &Path, state: &State) -> Result<Vec<git::Commit>> {
 }
 
 fn branch_config(root: &Path) -> Result<BTreeMap<String, Vec<String>>> {
-    let text = git(
-        root,
-        &[
-            "config",
-            "--local",
-            "--null",
-            "--get-regexp",
-            r"^(branch|remote)\.",
-        ],
-    )
-    .or_else(|error| {
-        if error.contains("code: 1") {
-            Ok(String::new())
-        } else {
-            Err(error)
-        }
-    })?;
+    // Listing an existing local config succeeds even when no tracked sections exist.
+    // Do not infer Git's exit code from platform-dependent ExitStatus display text.
+    let text = git(root, &["config", "--local", "--null", "--list"])?;
     let mut result: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for record in text.split('\0') {
-        if let Some((key, value)) = record.split_once('\n') {
+        if let Some((key, value)) = record.split_once('\n')
+            && (key.starts_with("branch.") || key.starts_with("remote."))
+        {
             result.entry(key.into()).or_default().push(value.into());
         }
     }

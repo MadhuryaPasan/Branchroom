@@ -2644,3 +2644,65 @@ fn final_review_can_move_the_initial_commit_and_undo_the_move() {
     assert_eq!(git::current_branch(&f.0).unwrap(), "main");
     assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
 }
+
+#[test]
+fn timeline_config_capture_accepts_no_tracked_sections_and_preserves_exact_values() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let first = timeline::capture(&f.0, "No branch or remote settings").unwrap();
+    assert!(first.branch_config.unwrap().is_empty());
+    git(
+        &f.0,
+        &[
+            "config",
+            "--local",
+            "branch.main.description",
+            "first line\nsecond line",
+        ],
+    )
+    .unwrap();
+    git(&f.0, &["config", "--local", "branch.main.merge", ""]).unwrap();
+    git(
+        &f.0,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "remote.origin.url",
+            "https://example.invalid/first.git",
+        ],
+    )
+    .unwrap();
+    git(
+        &f.0,
+        &[
+            "config",
+            "--local",
+            "--add",
+            "remote.origin.url",
+            "https://example.invalid/second.git",
+        ],
+    )
+    .unwrap();
+    let second = timeline::capture(&f.0, "Tracked settings").unwrap();
+    let config = second.branch_config.unwrap();
+    assert_eq!(
+        config["branch.main.description"],
+        vec!["first line\nsecond line"]
+    );
+    assert_eq!(config["branch.main.merge"], vec![""]);
+    assert_eq!(
+        config["remote.origin.url"],
+        vec![
+            "https://example.invalid/first.git",
+            "https://example.invalid/second.git"
+        ]
+    );
+    assert!(
+        !config
+            .keys()
+            .any(|key| key.starts_with("user.") || key.starts_with("core."))
+    );
+}
