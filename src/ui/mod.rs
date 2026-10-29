@@ -1,12 +1,15 @@
 mod changes;
 mod collaboration;
 mod compare;
+mod comparison_canvas;
 mod dialogs;
 mod drafts;
 mod experiments;
+mod graph_context;
 mod history;
 mod images;
 mod jobs;
+mod manipulation;
 mod merge;
 mod patch_preview;
 #[cfg(feature = "ui-preview")]
@@ -16,6 +19,7 @@ mod pull_request;
 mod qa;
 mod shell;
 mod theme;
+mod time_machine;
 mod views;
 mod workspace;
 use branchroom::{
@@ -51,6 +55,29 @@ enum Page {
 
 #[derive(Clone)]
 enum Task {
+    TimelineLoad {
+        item: branchroom::timeline::Item,
+        before: bool,
+    },
+    TimelinePlan {
+        item: branchroom::timeline::Item,
+        before: bool,
+    },
+    TimelineRestore(Box<branchroom::timeline::RestorePlan>),
+    TimelineUndo {
+        redo: bool,
+        id: String,
+    },
+    TimelineHide {
+        id: String,
+        hidden: bool,
+    },
+    Shelved {
+        reference: String,
+        id: String,
+        action: String,
+    },
+    RawGit(Vec<String>),
     Command {
         program: String,
         args: Vec<String>,
@@ -67,6 +94,8 @@ enum Task {
         amend: bool,
     },
     Commit(branchroom::commit::Plan),
+    GraphApply(Box<branchroom::operation::Preview>),
+    ConflictSides(String),
     RemoveSnapshot(String),
     RestoreSnapshot(String),
     Merge {
@@ -112,6 +141,10 @@ enum Task {
         stash: bool,
     },
     CommitFiles(String),
+    DeleteMerged {
+        branch: String,
+        expected: String,
+    },
     PullRequests,
     PullRequestDetails(u64),
     CreatePullRequest(branchroom::github::CreateRequest),
@@ -132,6 +165,17 @@ enum Task {
     },
 }
 enum JobData {
+    TimelineDetail {
+        root: PathBuf,
+        key: String,
+        target: String,
+        graph: Vec<git::Commit>,
+        patch: String,
+    },
+    TimelinePlan {
+        root: PathBuf,
+        plan: Box<branchroom::timeline::RestorePlan>,
+    },
     Image {
         path: String,
         staged: bool,
@@ -148,6 +192,12 @@ enum JobData {
     PullRequests(Vec<branchroom::collaboration::PullRequest>),
     None,
     Committed,
+    GraphReview(Box<branchroom::operation::Preview>),
+    ConflictSides {
+        root: PathBuf,
+        path: String,
+        versions: [String; 3],
+    },
     Patch {
         path: String,
         staged: bool,
@@ -155,7 +205,7 @@ enum JobData {
     },
     Files {
         commit: String,
-        files: Vec<String>,
+        files: Vec<CommitFile>,
     },
 }
 #[derive(Clone)]
@@ -185,6 +235,36 @@ struct Form {
     error: String,
 }
 
+#[derive(Clone)]
+struct CommitFile {
+    path: String,
+    added: String,
+    removed: String,
+}
+
+impl CommitFile {
+    fn parse(output: &str) -> Vec<Self> {
+        output
+            .split('\0')
+            .filter_map(|record| {
+                let mut fields = record.splitn(3, '\t');
+                Some(Self {
+                    added: fields.next()?.into(),
+                    removed: fields.next()?.into(),
+                    path: fields.next()?.into(),
+                })
+            })
+            .collect()
+    }
+    fn label(&self) -> String {
+        if self.added == "-" || self.removed == "-" {
+            format!("{} - Binary file", self.path)
+        } else {
+            format!("{}  +{} / -{}", self.path, self.added, self.removed)
+        }
+    }
+}
+
 pub struct Branchroom {
     settings: Settings,
     repo: Option<std::sync::Arc<RepoState>>,
@@ -195,6 +275,10 @@ pub struct Branchroom {
     busy: String,
     transfer_progress: process::Progress,
     last_refresh: Instant,
+    last_fetch: Option<Instant>,
+    fetch_attempt: Option<Instant>,
+    fetching: bool,
+    fetch_error: bool,
     last_draft_save: Instant,
     close_pending: bool,
     close_after_job: bool,
@@ -212,9 +296,8 @@ pub struct Branchroom {
     history_limit: usize,
     commit_message: String,
     amend: bool,
+    time_machine: time_machine::Timeline,
     snapshot_label: String,
-    left_snapshot: String,
-    right_snapshot: String,
     snapshot_branch: String,
     snapshot_ide: usize,
     snapshot_directory: String,
@@ -223,6 +306,7 @@ pub struct Branchroom {
     conflict_original: String,
     conflict_path: String,
     conflict_side: usize,
+    conflict_versions: [String; 3],
     remote_name: String,
     remote_url: String,
     clone_url: String,
@@ -252,6 +336,8 @@ pub struct Branchroom {
     ide_arguments: String,
     graph: std::sync::Arc<Vec<graph::GraphRow>>,
     history_view: history::HistoryView,
+    graph_context: graph_context::GraphContext,
+    manipulation: manipulation::Manipulation,
     activity_open: bool,
     inspector_open: bool,
     detail_open: bool,
@@ -261,9 +347,10 @@ pub struct Branchroom {
     selected_snapshot: String,
     source_details: Option<String>,
     merge_source: String,
-    snapshot_list: bool,
     history_list: bool,
+    graph_zoom: f32,
     branch_filter: String,
+    cleanup_branches: bool,
     branch_picker_requested: bool,
     density: usize,
     auto_refresh: bool,
@@ -287,11 +374,13 @@ pub struct Branchroom {
     coauthor: String,
     compare_base: String,
     compare_head: String,
+    comparison: comparison_canvas::ComparisonView,
     history_steps: usize,
     squash_message: String,
     reorder_ids: Vec<String>,
-    commit_files: Vec<String>,
+    commit_files: Vec<CommitFile>,
     commit_files_for: String,
+    commit_files_requested: String,
     switch_target: Option<String>,
     switch_stash: bool,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -341,6 +430,10 @@ impl Branchroom {
             busy: String::new(),
             transfer_progress: Default::default(),
             last_refresh: Instant::now(),
+            last_fetch: None,
+            fetch_attempt: None,
+            fetching: false,
+            fetch_error: false,
             last_draft_save: Instant::now(),
             close_pending: false,
             close_after_job: false,
@@ -360,9 +453,8 @@ impl Branchroom {
             history_limit: 500,
             commit_message: String::new(),
             amend: false,
+            time_machine: Default::default(),
             snapshot_label: String::new(),
-            left_snapshot: String::new(),
-            right_snapshot: String::new(),
             snapshot_branch: String::new(),
             snapshot_ide: 0,
             snapshot_directory: String::new(),
@@ -371,6 +463,7 @@ impl Branchroom {
             conflict_original: String::new(),
             conflict_path: String::new(),
             conflict_side: 3,
+            conflict_versions: Default::default(),
             remote_name: "origin".into(),
             remote_url: String::new(),
             clone_url: String::new(),
@@ -400,6 +493,8 @@ impl Branchroom {
             ide_arguments: "[\"{path}\"]".into(),
             graph: Default::default(),
             history_view: Default::default(),
+            graph_context: Default::default(),
+            manipulation: Default::default(),
             activity_open: false,
             inspector_open: true,
             detail_open: false,
@@ -409,9 +504,10 @@ impl Branchroom {
             selected_snapshot: String::new(),
             source_details: None,
             merge_source: String::new(),
-            snapshot_list: false,
             history_list: false,
+            graph_zoom: 1.,
             branch_filter: String::new(),
+            cleanup_branches: false,
             branch_picker_requested: false,
             density,
             auto_refresh,
@@ -435,11 +531,13 @@ impl Branchroom {
             coauthor: String::new(),
             compare_base: "main".into(),
             compare_head: "HEAD".into(),
+            comparison: Default::default(),
             history_steps: 2,
             squash_message: String::new(),
             reorder_ids: vec![],
             commit_files: vec![],
             commit_files_for: String::new(),
+            commit_files_requested: String::new(),
             switch_target: None,
             switch_stash: false,
             cancellation: None,
@@ -513,6 +611,7 @@ impl Branchroom {
         self.selected_lines.clear();
         self.commit_files.clear();
         self.commit_files_for.clear();
+        self.commit_files_requested.clear();
         self.commit_message.clear();
         self.commit_description.clear();
         self.coauthor.clear();
@@ -521,9 +620,8 @@ impl Branchroom {
         self.conflict_content.clear();
         self.conflict_original.clear();
         self.selected_commit.clear();
+        self.time_machine = Default::default();
         self.selected_snapshot.clear();
-        self.left_snapshot.clear();
-        self.right_snapshot.clear();
         self.detail_open = false;
         self.query.clear();
         self.root_input = path.to_string_lossy().into();
@@ -534,6 +632,9 @@ impl Branchroom {
             .map(|p| p.base.clone())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "origin/main".into());
+        self.last_fetch = None;
+        self.fetch_attempt = None;
+        self.fetch_error = false;
         self.refresh_at(path, ctx);
     }
     fn refresh_at(&mut self, path: PathBuf, ctx: &egui::Context) {
@@ -576,6 +677,7 @@ impl Branchroom {
         let done = match self.receiver.as_ref().map(Receiver::try_recv) {
             Some(Ok(done)) => done,
             Some(Err(mpsc::TryRecvError::Disconnected)) => {
+                self.fetching = false;
                 self.receiver = None;
                 self.cancellation = None;
                 self.busy.clear();
@@ -585,6 +687,13 @@ impl Branchroom {
             _ => return,
         };
         {
+            if self.fetching {
+                self.fetching = false;
+                self.fetch_error = done.output.is_err();
+                if !self.fetch_error {
+                    self.last_fetch = Some(Instant::now());
+                }
+            }
             self.receiver = None;
             self.cancellation = None;
             self.busy.clear();
@@ -592,7 +701,28 @@ impl Branchroom {
             if done.detail {
                 self.detail = done.output.clone().unwrap_or_else(|e| e);
             }
+            self.time_machine.loading = false;
             match done.data {
+                JobData::TimelineDetail {
+                    root,
+                    key,
+                    target,
+                    graph,
+                    patch,
+                } => {
+                    if root == self.path() && self.time_machine.selected == key {
+                        self.time_machine.target = target;
+                        self.time_machine.graph = graph;
+                        self.time_machine.patch = patch;
+                        self.time_machine.loading = false;
+                    }
+                }
+                JobData::TimelinePlan { root, plan } => {
+                    if root == self.path() {
+                        self.time_machine.plan = Some(plan);
+                    }
+                }
+
                 JobData::GithubActionDone { details, review } => {
                     if review {
                         self.pr_review.clear();
@@ -676,7 +806,18 @@ impl Branchroom {
                     self.commit_files_for = commit;
                     self.commit_files = files;
                 }
+                JobData::GraphReview(review) => self.accept_graph_review(*review),
+                JobData::ConflictSides {
+                    root,
+                    path,
+                    versions,
+                } => {
+                    if root == self.path() && path == self.conflict_path {
+                        self.conflict_versions = versions;
+                    }
+                }
                 JobData::Committed => {
+                    self.manipulation.committed();
                     self.commit_message.clear();
                     self.commit_description.clear();
                     self.coauthor.clear();
@@ -701,12 +842,7 @@ impl Branchroom {
                         if switched {
                             self.query.clear();
                         }
-                        if switched
-                            || !repo
-                                .branch_commits
-                                .iter()
-                                .any(|c| c.id == self.selected_commit)
-                        {
+                        if switched || !repo.commits.iter().any(|c| c.id == self.selected_commit) {
                             self.selected_commit = repo
                                 .branches
                                 .iter()
@@ -722,25 +858,12 @@ impl Branchroom {
                         {
                             self.selected_snapshot.clear();
                         }
-                        if !repo
-                            .snapshots
-                            .iter()
-                            .any(|s| s.reference == self.left_snapshot)
-                        {
-                            self.left_snapshot.clear();
-                        }
-                        if !repo
-                            .snapshots
-                            .iter()
-                            .any(|s| s.reference == self.right_snapshot)
-                        {
-                            self.right_snapshot.clear();
-                        }
                         let load_draft = self
                             .repo
                             .as_ref()
                             .is_none_or(|old| old.root != repo.root || old.branch != repo.branch);
                         if self.repo.as_ref().is_some_and(|old| old.root != repo.root) {
+                            self.time_machine = Default::default();
                             self.pull_requests.clear();
                             self.pr_details = None;
                             self.pr_review.clear();
@@ -761,7 +884,7 @@ impl Branchroom {
                         self.settings.remember(&repo.root);
                         self.root_input = repo.root.to_string_lossy().into();
                         self.base_input = repo.base.clone();
-                        self.graph = std::sync::Arc::new(graph::layout(&repo.branch_commits));
+                        self.graph = std::sync::Arc::new(graph::layout(&repo.commits));
                         self.repo = Some(std::sync::Arc::new(repo));
                         self.save();
                     }
@@ -836,6 +959,31 @@ impl eframe::App for Branchroom {
         ctx.request_repaint_after(Duration::from_secs(1));
         if !self.preview_mode
             && self.auto_refresh
+            && !self.manipulation.active()
+            && self.receiver.is_none()
+            && self.pending.is_none()
+            && self.form.is_none()
+            && self
+                .repo
+                .as_ref()
+                .is_some_and(|r| !r.remotes.trim().is_empty())
+            && self
+                .fetch_attempt
+                .is_none_or(|t| t.elapsed() > Duration::from_secs(300))
+            && branchroom::safety::ensure_writable(&self.path()).is_ok()
+        {
+            self.execute(
+                Task::Command {
+                    program: "git".into(),
+                    args: process::strings(&["fetch", "--all", "--prune"]),
+                    refresh: true,
+                },
+                &ctx,
+            );
+        }
+        if !self.preview_mode
+            && self.auto_refresh
+            && !self.manipulation.active()
             && self.repo.is_some()
             && self.receiver.is_none()
             && self.pending.is_none()

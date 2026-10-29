@@ -543,6 +543,8 @@ fn render_redesign_screens() {
     }
     let mut columns = screen(Page::History, false);
     columns.run_steps(3);
+    columns.get_by_label("View").click();
+    columns.run_steps(2);
     columns.get_by_label("Columns").click();
     columns.run_steps(3);
     columns
@@ -573,6 +575,8 @@ fn history_graph_column_resizes_by_pointer_and_exposes_keyboard_width_controls()
     harness.drop_at(handle + egui::vec2(40., 0.));
     harness.run_steps(3);
     assert!(harness.state().settings.history_columns.graph > initial + 20.);
+    harness.get_by_label("View").click();
+    harness.run_steps(2);
     harness.get_by_label("Columns").click();
     harness.run_steps(2);
     harness.check_accessibility();
@@ -605,12 +609,10 @@ fn history_graph_automatically_fits_more_than_nine_lanes() {
 }
 
 #[test]
-fn branch_and_snapshot_source_columns_resize_and_offer_numeric_controls() {
+fn branch_source_column_resizes_and_offers_numeric_controls() {
     use egui_kittest::kittest::Queryable;
-    for (page, id) in [
-        (Page::Branches, "branch_source_divider"),
-        (Page::Snapshots, "snapshot_source_divider"),
-    ] {
+    {
+        let (page, id) = (Page::Branches, "branch_source_divider");
         let mut harness = screen(page, false);
         harness.run_steps(3);
         let handle = harness
@@ -716,7 +718,7 @@ fn compact_branch_map_keeps_tree_layout_and_sync_accessible() {
         tree.max.y < 325.,
         "Tree layout is clipped behind the status bar: {tree:?}"
     );
-    harness.get_by_label("Sync & baseline").click();
+    harness.get_by_label("Sync & comparison").click();
     harness.run_steps(2);
     assert!(
         harness
@@ -998,4 +1000,569 @@ fn repository_menu_filters_recent_paths_without_hiding_current_repository() {
             ))
             .is_some()
     );
+}
+
+#[test]
+fn fetch_completion_updates_freshness_only_on_success() {
+    let mut harness = screen(Page::History, false);
+    for success in [true, false] {
+        let (tx, rx) = mpsc::channel();
+        let app = harness.state_mut();
+        app.fetching = true;
+        app.receiver = Some(rx);
+        tx.send(Completed {
+            output: if success {
+                Ok(String::new())
+            } else {
+                Err("Connection unavailable".into())
+            },
+            state: None,
+            detail: false,
+            open: None,
+            data: JobData::None,
+        })
+        .unwrap();
+        let previous = app.last_fetch;
+        app.poll();
+        assert!(!app.fetching);
+        assert_eq!(app.fetch_error, !success);
+        if success {
+            assert!(app.last_fetch.is_some());
+        } else {
+            assert_eq!(app.last_fetch, previous);
+        }
+    }
+}
+
+#[test]
+fn preview_inspector_does_not_attempt_repository_commands() {
+    let mut harness = screen(Page::History, true);
+    harness.state_mut().inspector_open = true;
+    harness.run_steps(3);
+    assert!(!harness.state().error);
+    assert!(harness.state().receiver.is_none());
+}
+
+#[test]
+fn shell_actions_remain_inside_a_narrow_window() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.set_size(egui::vec2(320., 700.));
+    harness.run_steps(3);
+    for name in ["Modes", "Sync", "Open in IDE", "Activity log"] {
+        let rect = harness.get_by_label(name).rect();
+        assert!(rect.min.x >= 0. && rect.max.x <= 320., "{name}: {rect:?}");
+    }
+}
+
+#[test]
+fn branch_map_selection_is_retained_in_commit_view() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = branch_pair_fixture();
+    harness.run_steps(3);
+    harness.get_by_label("main  · current, This computer and remote match, Remote: origin/main · as of last fetch").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_commit, "abc123");
+    assert!(harness.state().inspector_open);
+    harness.state_mut().page = Page::History;
+    harness.run_steps(2);
+    assert_eq!(harness.state().selected_commit, "abc123");
+}
+
+#[test]
+fn twelve_thousand_commits_render_as_virtual_rows() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    let mut repo = harness.state().repo.as_ref().unwrap().as_ref().clone();
+    repo.commits = (0..12000)
+        .map(|i| git::Commit {
+            id: format!("{i:040x}"),
+            parents: if i < 11999 {
+                vec![format!("{:040x}", i + 1)]
+            } else {
+                vec![]
+            },
+            subject: format!("Virtual commit {i}"),
+            author: "Test author".into(),
+            date: "now".into(),
+            ..Default::default()
+        })
+        .collect();
+    harness.state_mut().graph = std::sync::Arc::new(graph::layout(&repo.commits));
+    harness.state_mut().repo = Some(std::sync::Arc::new(repo));
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label("Virtual commit 0 — Test author — now")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("Virtual commit 11999 — Test author — now")
+            .is_none()
+    );
+    assert!(!harness.state().error);
+}
+
+#[test]
+#[ignore = "Exports Phase 2 graph lenses for visual verification"]
+fn render_phase_two_lenses() {
+    std::fs::create_dir_all("target/qa/phase-two").unwrap();
+    for (page, name) in [
+        (Page::History, "commits"),
+        (Page::Branches, "branches"),
+        (Page::Compare, "compare"),
+    ] {
+        for (light, width, height) in [
+            (false, 1320., 820.),
+            (true, 1320., 820.),
+            (false, 530., 700.),
+        ] {
+            let mut harness = screen(page, true);
+            harness.state_mut().settings.light_theme = light;
+            theme::install(&harness.ctx, light);
+            harness.set_size(egui::vec2(width, height));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("target/qa/phase-two/{name}-{light}-{width}.png"))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn numstat_preserves_unicode_tabs_and_newlines_in_file_paths() {
+    let files = CommitFile::parse("2\t3\tdocs/Release notes.md\0-\t-\timages/日本\t語\n.png\0");
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].path, "docs/Release notes.md");
+    assert_eq!(files[1].path, "images/日本\t語\n.png");
+    assert!(files[1].label().ends_with("Binary file"));
+}
+
+#[test]
+fn dragging_a_commit_onto_a_branch_opens_a_review_without_executing() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    let mut repo = harness.state().repo.as_ref().unwrap().as_ref().clone();
+    repo.changes.clear();
+    harness.state_mut().repo = Some(std::sync::Arc::new(repo));
+    harness.run_steps(3);
+    let source = harness
+        .get_by_label(
+            "Keep notes available without a network connection — Sample Developer — 2 hours ago",
+        )
+        .rect()
+        .center();
+    let target = harness.get_by_label("main").rect().center();
+    harness.hover_at(source);
+    harness.run_steps(1);
+    harness.drag_at(source);
+    harness.run_steps(1);
+    harness.hover_at(target);
+    harness.run_steps(2);
+    harness.drop_at(target);
+    harness.run_steps(2);
+    assert!(
+        matches!(&harness.state().manipulation.draft,Some(branchroom::operation::Kind::CherryPick{target,..}) if target=="refs/heads/main")
+    );
+    assert!(harness.state().receiver.is_none());
+    assert!(harness.query_by_label("Confirm action").is_some());
+}
+#[test]
+fn escape_cancels_a_graph_draft_and_repository_switch_discards_it() {
+    let mut harness = screen(Page::History, false);
+    harness
+        .state_mut()
+        .begin_graph_action(branchroom::operation::Kind::Commit {
+            message: String::new(),
+        });
+    harness.run_steps(2);
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    assert!(harness.state().manipulation.draft.is_none());
+    harness
+        .state_mut()
+        .begin_graph_action(branchroom::operation::Kind::Commit {
+            message: String::new(),
+        });
+    let mut repo = harness.state().repo.as_ref().unwrap().as_ref().clone();
+    repo.root = repo.root.join("another-repository");
+    harness.state_mut().repo = Some(std::sync::Arc::new(repo));
+    harness.run_steps(2);
+    assert!(harness.state().manipulation.draft.is_none());
+}
+
+struct GraphActionFixture {
+    root: PathBuf,
+    state: branchroom::settings::StateDirectory,
+}
+impl GraphActionFixture {
+    fn new(conflict: bool) -> Self {
+        let id = branchroom::snapshot::unique_id();
+        let root = std::env::temp_dir().join(format!("branchroom-ui-three-{id}"));
+        let state = branchroom::settings::StateDirectory::enter_isolated(
+            std::env::temp_dir().join(format!("branchroom-ui-three-state-{id}")),
+        );
+        std::fs::create_dir(&root).unwrap();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "Preview tests"],
+            vec!["config", "user.email", "preview@example.invalid"],
+            vec!["config", "commit.gpgsign", "false"],
+            vec!["config", "core.autocrlf", "false"],
+        ] {
+            git::git(&root, &args).unwrap();
+        }
+        std::fs::write(root.join("shared.txt"), "Base version\n").unwrap();
+        git::git(&root, &["add", "-A"]).unwrap();
+        git::git(&root, &["commit", "-m", "Base point"]).unwrap();
+        git::git(&root, &["switch", "-c", "incoming"]).unwrap();
+        std::fs::write(
+            root.join(if conflict {
+                "shared.txt"
+            } else {
+                "incoming.txt"
+            }),
+            "Incoming version\n",
+        )
+        .unwrap();
+        git::git(&root, &["add", "-A"]).unwrap();
+        git::git(&root, &["commit", "-m", "Incoming change"]).unwrap();
+        git::git(&root, &["switch", "main"]).unwrap();
+        std::fs::write(
+            root.join(if conflict { "shared.txt" } else { "main.txt" }),
+            "Current version\n",
+        )
+        .unwrap();
+        git::git(&root, &["add", "-A"]).unwrap();
+        git::git(&root, &["commit", "-m", "Current change"]).unwrap();
+        Self { root, state }
+    }
+    fn harness(
+        &self,
+        review: Option<branchroom::operation::Preview>,
+        resolver: bool,
+    ) -> Harness<'static, Branchroom> {
+        let root = self.root.clone();
+        Harness::builder()
+            .with_size(egui::vec2(1320., 820.))
+            .with_accessibility_check(false)
+            .build_eframe(move |cc| {
+                let mut app = Branchroom::with_context(&cc.egui_ctx, true);
+                let repo = git::load(&root, "main", 100).unwrap();
+                app.graph = std::sync::Arc::new(graph::layout(&repo.commits));
+                app.selected_commit = repo.head.clone();
+                app.repo = Some(std::sync::Arc::new(repo));
+                app.page = if resolver {
+                    Page::Conflicts
+                } else {
+                    Page::History
+                };
+                if let Some(review) = review {
+                    app.accept_graph_review(review);
+                }
+                if resolver {
+                    app.conflict_path = "shared.txt".into();
+                    app.conflict_original =
+                        std::fs::read_to_string(root.join("shared.txt")).unwrap();
+                    app.conflict_content = "Merged current and incoming versions\n".into();
+                    app.conflict_versions = std::array::from_fn(|i| {
+                        git::git(&root, &["show", &format!(":{}:shared.txt", i + 1)]).unwrap()
+                    });
+                }
+                app
+            })
+    }
+    fn review(&self) -> branchroom::operation::Preview {
+        branchroom::operation::preview(
+            &self.root,
+            branchroom::operation::Kind::Merge {
+                source: "incoming".into(),
+                target: "main".into(),
+            },
+        )
+        .unwrap()
+    }
+}
+impl Drop for GraphActionFixture {
+    fn drop(&mut self) {
+        let state = self.state.path().to_path_buf();
+        self.state.restore();
+        for path in [&self.root, &state] {
+            if path.parent() == Some(std::env::temp_dir().as_path())
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("branchroom-ui-three-"))
+            {
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+}
+#[test]
+fn graph_review_has_keyboard_controls_and_cancel_stays_visible_at_zoom() {
+    use egui_kittest::kittest::Queryable;
+    let fixture = GraphActionFixture::new(false);
+    let mut harness = fixture.harness(Some(fixture.review()), false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    assert!((harness.ctx.content_rect().height() - 350.).abs() < 1.);
+    assert!(harness.query_by_label("Confirm action").is_some());
+    let cancel = harness.get_by_label("Cancel preview");
+    assert!(
+        cancel.rect().max.y <= 350.,
+        "Cancel is clipped: {:?}",
+        cancel.rect()
+    );
+    assert!(
+        harness.unnamed_widgets().is_empty(),
+        "{:?}",
+        harness.unnamed_widgets()
+    );
+    harness.get_by_label("Cancel preview").click();
+    harness.run_steps(2);
+    assert!(!harness.state().manipulation.active());
+}
+#[test]
+fn raw_advanced_flags_are_not_silently_changed_by_graph_routing() {
+    let harness = screen(Page::History, false);
+    for args in [
+        vec!["cherry-pick", "--no-commit", "abc"],
+        vec!["merge", "--no-ff", "incoming"],
+        vec!["merge", "one", "two"],
+        vec!["reset", "--hard", "HEAD~1"],
+    ] {
+        assert!(
+            harness
+                .state()
+                .reviewed_graph_kind(&Task::Command {
+                    program: "git".into(),
+                    args: process::strings(&args),
+                    refresh: true
+                })
+                .is_none()
+        );
+    }
+}
+#[test]
+#[ignore = "Exports real graph forecasts and the conflict resolver for visual QA"]
+fn render_phase_three_previews() {
+    std::fs::create_dir_all("target/qa/phase-three").unwrap();
+    for conflict in [false, true] {
+        let fixture = GraphActionFixture::new(conflict);
+        let review = fixture.review();
+        for (light, width, height) in [
+            (false, 1320., 820.),
+            (true, 1320., 820.),
+            (false, 530., 700.),
+        ] {
+            let mut harness = fixture.harness(Some(review.clone()), false);
+            harness.state_mut().settings.light_theme = light;
+            theme::install(&harness.ctx, light);
+            harness.set_size(egui::vec2(width, height));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!(
+                    "target/qa/phase-three/forecast-{conflict}-{light}-{width}.png"
+                ))
+                .unwrap();
+        }
+        if conflict {
+            assert!(git::git(&fixture.root, &["merge", "--no-edit", "incoming"]).is_err());
+            for (width, height) in [(1320., 820.), (530., 700.)] {
+                let mut harness = fixture.harness(None, true);
+                harness.set_size(egui::vec2(width, height));
+                harness.run_steps(3);
+                harness
+                    .render()
+                    .unwrap()
+                    .save(format!("target/qa/phase-three/resolver-{width}.png"))
+                    .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn time_machine_replaces_snapshot_modes_and_keeps_recovery_actions_named() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Snapshots, true);
+    harness.run_steps(3);
+    for label in [
+        "Save safety point",
+        "Undo last action",
+        "Redo action",
+        "Shelve work",
+        "Restore…",
+        "Compare",
+        "Branch from here…",
+        "Delete entry",
+    ] {
+        assert!(harness.query_by_label(label).is_some(), "Missing {label}");
+    }
+    for old in [
+        "Tree",
+        "List",
+        "Inspector",
+        "Removed snapshots",
+        "Tree layout",
+        "Compare versions",
+        "Saved points",
+    ] {
+        assert!(
+            harness.query_by_label(old).is_none(),
+            "Old snapshot UI remains: {old}"
+        );
+    }
+}
+#[test]
+fn shelved_work_has_inline_diff_and_explicit_actions_at_narrow_width() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Snapshots, false);
+    let item = branchroom::timeline::Item {
+        key: "shelf:test".into(),
+        kind: "Shelved work".into(),
+        label: "Finish offline cache".into(),
+        reference: "stash@{0}".into(),
+        target: "saved".into(),
+        ..Default::default()
+    };
+    std::sync::Arc::make_mut(harness.state_mut().repo.as_mut().unwrap()).timeline =
+        vec![item.clone()];
+    harness.state_mut().time_machine.selected = item.key;
+    harness.state_mut().time_machine.patch = "-old line\n+saved line".into();
+    harness.set_size(egui::vec2(530., 700.));
+    harness.run_steps(3);
+    for label in ["Apply", "Apply and keep", "Delete", "Saved changes"] {
+        assert!(harness.query_by_label(label).is_some(), "Missing {label}");
+    }
+    assert!(harness.query_by_label("More actions").is_none());
+    harness.check_accessibility();
+}
+#[test]
+#[ignore = "Exports Time Machine timeline, restore and shelved work in both themes and narrow windows"]
+fn render_phase_four_timeline() {
+    use branchroom::timeline;
+    std::fs::create_dir_all("target/qa/phase-four").unwrap();
+    let fixture = GraphActionFixture::new(false);
+    let entry = timeline::begin(&fixture.root, "Commit offline cache").unwrap();
+    std::fs::write(fixture.root.join("cache.txt"), "Offline cache\n").unwrap();
+    git::git(&fixture.root, &["add", "cache.txt"]).unwrap();
+    git::git(&fixture.root, &["commit", "-m", "Add offline cache"]).unwrap();
+    timeline::finish(&fixture.root, entry, true).unwrap();
+    std::fs::write(
+        fixture.root.join("cache.txt"),
+        "Saved offline improvements\n",
+    )
+    .unwrap();
+    git::git(
+        &fixture.root,
+        &["stash", "push", "-m", "Finish offline cache"],
+    )
+    .unwrap();
+    snapshot::create(&fixture.root, "Before cache experiment").unwrap();
+    let items = timeline::items(&fixture.root, 100).unwrap();
+    for mode in ["timeline", "restore", "shelved"] {
+        for (light, width, height) in [
+            (false, 1320., 820.),
+            (true, 1320., 820.),
+            (false, 530., 700.),
+        ] {
+            let mut harness = fixture.harness(None, false);
+            harness.state_mut().page = Page::Snapshots;
+            let item = items
+                .iter()
+                .find(|i| {
+                    i.kind
+                        == if mode == "shelved" {
+                            "Shelved work"
+                        } else {
+                            "Action"
+                        }
+                })
+                .unwrap()
+                .clone();
+            harness.state_mut().time_machine.selected = item.key.clone();
+            harness.state_mut().time_machine.graph = if item.kind == "Action" {
+                let state = timeline::entries(&fixture.root)
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| e.id == item.action)
+                    .unwrap()
+                    .after
+                    .unwrap();
+                timeline::state_graph(&fixture.root, &state).unwrap()
+            } else {
+                timeline::graph(&fixture.root, &item.target).unwrap()
+            };
+            if mode == "shelved" {
+                harness.state_mut().time_machine.patch = git::git(
+                    &fixture.root,
+                    &["stash", "show", "--include-untracked", "-p", &item.target],
+                )
+                .unwrap();
+            }
+            if mode == "restore" {
+                harness.state_mut().time_machine.plan = Some(Box::new(
+                    timeline::plan_restore(&fixture.root, &item, true).unwrap(),
+                ));
+            }
+            harness.state_mut().settings.light_theme = light;
+            theme::install(&harness.ctx, light);
+            harness.set_size(egui::vec2(width, height));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save(format!("target/qa/phase-four/{mode}-{light}-{width}.png"))
+                .unwrap();
+        }
+    }
+}
+
+#[test]
+fn timeline_restore_controls_remain_visible_at_two_hundred_percent_zoom() {
+    use egui_kittest::kittest::Queryable;
+    let fixture = GraphActionFixture::new(false);
+    let item = branchroom::timeline::items(&fixture.root, 100)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.kind == "Commit")
+        .unwrap();
+    let plan = branchroom::timeline::plan_restore(&fixture.root, &item, false).unwrap();
+    let mut harness = fixture.harness(None, false);
+    harness.state_mut().page = Page::Snapshots;
+    harness.state_mut().time_machine.plan = Some(Box::new(plan));
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    for label in ["Confirm restore", "Cancel restore"] {
+        let rect = harness.get_by_label(label).rect();
+        assert!(
+            rect.max.x <= 530. && rect.max.y <= 306.,
+            "Clipped {label}: {rect:?}"
+        );
+    }
+}
+#[test]
+fn global_undo_shortcut_does_not_consume_text_editor_undo() {
+    let mut harness = screen(Page::Changes, false);
+    harness.run_steps(2);
+    harness.state_mut().commit_message = "A message".into();
+    harness
+        .ctx
+        .memory_mut(|m| m.request_focus(egui::Id::unique("commit_summary")));
+    harness.run_steps(2);
+    let output = harness.state().output.clone();
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::Z);
+    harness.run_steps(2);
+    assert_eq!(harness.state().output, output);
+    assert!(harness.state().receiver.is_none());
 }

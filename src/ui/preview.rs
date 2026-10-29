@@ -73,6 +73,8 @@ impl Branchroom {
         let commits:Vec<_>=names.iter().enumerate().map(|(i,name)|git::Commit{id:id(5-i),parents:if i==4{vec![]}else if i==1{vec![id(3),id(2)]}else{vec![id(4-i)]},refs:if i==0{"HEAD -> feature/offline".into()}else if i==1{"main, tag: v0.2.0".into()}else{String::new()},subject:if long&&i==0{format!("{name} with incremental reconciliation across every disconnected account and background synchronization job")}else{(*name).into()},author:if long{"Sample Developer — Infrastructure Engineering".into()}else{"Sample Developer".into()},date:"2 hours ago".into()}).collect();
         let snapshots:Vec<_>=["Larger offline cache","Streaming cache writer","Keep the smaller memory budget"].iter().enumerate().map(|(i,label)|git::Snapshot{reference:format!("refs/branchroom/snapshots/{}",i+1),id:id(100+i),label:if long{format!("{label} — experiment with an unusually descriptive name for the disconnected synchronization path")}else{(*label).into()},date:if i==0{"1 hour ago".into()}else{format!("{} hours ago",i+1)},parents:vec![id(if i<2{5}else{4})]}).collect();
         let mut repo = RepoState {
+            timeline: vec![],
+            default_branch: Some("main".into()),
             head: id(5),
             root,
             branch: if long {
@@ -181,7 +183,7 @@ impl Branchroom {
             .first()
             .map(|c| c.id.clone())
             .unwrap_or_default();
-        self.graph = std::sync::Arc::new(graph::layout(&repo.branch_commits));
+        self.graph = std::sync::Arc::new(graph::layout(&repo.commits));
         self.root_input = repo.root.display().to_string();
         self.base_input = repo.base.clone();
         self.repo = Some(std::sync::Arc::new(repo));

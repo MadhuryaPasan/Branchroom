@@ -63,12 +63,15 @@ pub fn linear_tip(root: &Path, count: usize) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-fn ensure_unpublished(root: &Path, ids: &[String]) -> Result<()> {
+pub(crate) fn ensure_unpublished(root: &Path, ids: &[String]) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
     let mut args = vec!["for-each-ref".to_string(), "--format=%(refname)".into()];
     args.extend(ids.iter().map(|id| format!("--contains={id}")));
     args.push("refs/remotes".into());
     if !process::stdout("git", root, &args)?.trim().is_empty() {
-        return Err("A selected commit is reachable from a remote-tracking branch. Fetch and inspect shared history before attempting a manual rewrite.".into());
+        return Err("These commits are already shared. Use Revert to undo their changes safely, or review a manual rewrite in Advanced.".into());
     }
 
     Ok(())
@@ -81,10 +84,19 @@ fn recovery_ref(root: &Path, head: &str) -> Result<String> {
 }
 
 pub fn run(root: &Path, action: &Action) -> Result<String> {
+    run_checked(root, action, None)
+}
+pub(crate) fn run_reviewed(root: &Path, action: &Action, expected: &str) -> Result<String> {
+    run_checked(root, action, Some(expected))
+}
+fn run_checked(root: &Path, action: &Action, expected: Option<&str>) -> Result<String> {
     crate::safety::ensure_writable(root)?;
     crate::collaboration::require_idle(root)?;
     let reference = branch(root)?;
     let old = resolve(root, "HEAD")?;
+    if expected.is_some_and(|head| head != old) {
+        return Err("The branch changed after this preview. Review the action again".into());
+    }
     match action {
         Action::Undo => {
             linear_tip(root, 1)?;

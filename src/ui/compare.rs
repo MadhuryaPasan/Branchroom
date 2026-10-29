@@ -2,10 +2,20 @@ use super::*;
 
 impl Branchroom {
     pub(super) fn compare(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.comparison.advanced {
+            if ui.button("Back to visual comparison").clicked() {
+                self.comparison.advanced = false;
+            }
+            self.compare_advanced(ui, ctx);
+        } else {
+            self.comparison_canvas(ui, ctx);
+        }
+    }
+    pub(super) fn compare_advanced(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let repo = self.repo.as_ref().unwrap().clone();
         let writable = !branchroom::safety::is_protected(&repo.root);
         egui::ScrollArea::vertical().id_salt("compare_page").show(ui,|ui|{
-            heading(ui,"Compare & recovery","Preview a pull request, refine local history, or restore discarded files.");
+            heading(ui,"Advanced history operations","Compare branches or refine local commits. Saved versions and recovery are in Time Machine");
             surface().show(ui,|ui|{
                 ui.label(RichText::new("Compare branches or commits").size(18.).strong());ui.add_space(12.);
                 ui.horizontal_wrapped(|ui|{ui.label("Base");ui.add(egui::TextEdit::singleline(&mut self.compare_base).hint_text("Base branch, tag, or commit").desired_width(200.));ui.label("Head");ui.add(egui::TextEdit::singleline(&mut self.compare_head).hint_text("Compare branch, tag, or commit").desired_width(200.));});
@@ -30,23 +40,8 @@ if index+1<self.reorder_ids.len()&&ui.small_button("Move later").clicked(){movem
                     if let Some((a,b))=movement{self.reorder_ids.swap(a,b);}
                     if !self.reorder_ids.is_empty()&&ui.button("Review reordered history").clicked(){self.pending=Some(Pending{title:"Reorder local commits".into(),explanation:"Replay this oldest-to-newest order using a private index. If a conflict occurs or the final tree differs, your branch is left unchanged.".into(),task:Task::History(branchroom::history::Action::Reorder(self.reorder_ids.clone()))});}
                 });
-                egui::CollapsingHeader::new(format!("Saved history checkpoints ({})",repo.recovery_heads.len())).show(ui,|ui|{
-                    subtitle(ui,"Undo, reset, squash, and reorder save the previous branch tip here. Create a recovery branch to inspect the old history.");
-                    for saved in &repo.recovery_heads{
-                        ui.label(RichText::new(&saved.label).strong());subtitle(ui,&saved.date);
-                        ui.horizontal_wrapped(|ui|{
-                            if ui.button("Inspect checkpoint").clicked(){self.detail_title=format!("Recovery · {}",saved.label);self.read("git",process::strings(&["show","--stat","--patch",&saved.id]),ctx);}
-                            if ui.add_enabled(writable,egui::Button::new("Create recovery branch…")).clicked(){self.form("Create recovery branch","Create a new branch at this saved checkpoint. Your current checkout and working files stay intact.","git",&["branch"],&[("New branch name","")],&[&saved.id]);}
-                        });ui.add_space(10.);
-                    }
-                    if repo.recovery_heads.is_empty(){subtitle(ui,"No history checkpoints yet.");}
-                });
             });ui.add_space(18.);
-            surface().show(ui,|ui|{
-                ui.label(RichText::new("Discard recovery").size(18.).strong());
-                let entries=branchroom::recovery::entries(&repo.root);if entries.is_empty(){subtitle(ui,"Files discarded by Branchroom will appear here. Recovery copies are kept outside the repository.");}
-                for entry in entries{ui.horizontal_wrapped(|ui|{ui.monospace(&entry.id);ui.label(&entry.path);if ui.add_enabled(writable,egui::Button::new("Restore working file…")).clicked(){self.pending=Some(Pending{title:"Restore discarded file".into(),explanation:format!("Restore {} from this recovery copy. This overwrites the current working file but does not change the index.",entry.path),task:Task::RestoreDiscard(entry.id)});}});}
-            });ui.add_space(18.);
+            if ui.button("Open Time Machine").clicked(){self.page=Page::Snapshots;}
             if !self.detail.is_empty()&&self.detail_page==Page::Compare{section(ui,&self.detail_title);egui::ScrollArea::both().id_salt("compare_patch").max_height(450.).show(ui,|ui|{ui.add(egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true));});}
         });
     }

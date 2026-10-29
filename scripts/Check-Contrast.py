@@ -3,8 +3,12 @@ from pathlib import Path
 import re
 
 source = (Path(__file__).resolve().parents[1] / "src/ui/theme.rs").read_text(encoding="utf-8")
-tokens = {name: tuple(map(int, channels)) for name, *channels in re.findall(
-    r"const\s+(\w+):\s*Color32\s*=\s*Color32::from_rgb\((\d+),\s*(\d+),\s*(\d+)\)", source)}
+palettes = {"dark": {}, "light": {}}
+for name, dark, light in re.findall(r"fn (\w+)\(\) -> Color32\s*\{\s*color\(\(([^)]+)\), \(([^)]+)\)\)", source):
+    for theme, value in [("dark", dark), ("light", light)]:
+        palettes[theme][name] = tuple(map(int, value.split(",")))
+if not all(palettes.values()):
+    raise SystemExit("No theme tokens found")
 
 def luminance(rgb):
     linear = [channel / 255 / 12.92 if channel / 255 <= .04045 else ((channel / 255 + .055) / 1.055) ** 2.4 for channel in rgb]
@@ -17,11 +21,12 @@ def ratio(foreground, background):
 pairs = [(fg, bg, 4.5) for fg in ["INK", "MUTED", "ACCENT", "SUCCESS", "WARNING", "DANGER", "SNAPSHOT"] for bg in ["PAPER", "SURFACE", "SELECTED"]]
 pairs += [("INK", "PRIMARY", 4.5), ("SIDEBAR", "DANGER", 4.5), ("CONNECTOR", "PAPER", 3), ("INPUT_BORDER", "SIDEBAR", 3)]
 failed = []
-for foreground, background, minimum in pairs:
-    measured = ratio(foreground, background)
-    print(f"{foreground:12} / {background:9}  {measured:.2f}:1  minimum {minimum}:1")
-    if measured < minimum:
-        failed.append(f"{foreground}/{background}: {measured:.2f}:1")
+for theme, tokens in palettes.items():
+    for foreground, background, minimum in pairs:
+        measured = ratio(foreground, background)
+        print(f"{theme:5} {foreground:12} / {background:9} {measured:.2f}:1")
+        if measured < minimum:
+            failed.append(f"{theme} {foreground}/{background}: {measured:.2f}:1")
 if failed:
     raise SystemExit("Failing pairs: " + ", ".join(failed))
-print("All declared opaque token pairs pass. Antialiased glyphs and translucent surfaces require separate visual inspection.")
+print("All declared opaque pairs pass in both themes")

@@ -2,7 +2,12 @@ use super::*;
 
 impl Branchroom {
     pub(super) fn execute(&mut self, task: Task, ctx: &egui::Context) {
+        if let Some(kind) = self.reviewed_graph_kind(&task) {
+            self.begin_graph_action(kind);
+            return;
+        }
         let read_only = match &task {
+            Task::RawGit(args) => branchroom::safety::read_only_git(args),
             Task::Command { program, args, .. } => {
                 if program == "git" {
                     branchroom::safety::read_only_git(args)
@@ -12,14 +17,20 @@ impl Branchroom {
                     false
                 }
             }
-            Task::ImagePreview { .. }
+            Task::TimelineLoad { .. }
+            | Task::TimelinePlan { .. }
+            | Task::ImagePreview { .. }
             | Task::FilePatch { .. }
             | Task::CommitFiles(_)
+            | Task::ConflictSides(_)
             | Task::PullRequestDetails(_)
             | Task::PullRequests
             | Task::CommitPullRequests(_) => true,
             _ => false,
         };
+        if self.manipulation.active() && !read_only && !matches!(&task, Task::GraphApply(_)) {
+            self.cancel_graph_action(ctx);
+        }
         let mutation_root = match &task {
             Task::Clone { destination, .. } | Task::Init(destination) => {
                 if destination.is_absolute() {
@@ -53,6 +64,11 @@ impl Branchroom {
         } else {
             None
         };
+        if matches!(&task, Task::Command { program, args, .. } if program == "git" && args.first().is_some_and(|a| a == "fetch"))
+        {
+            self.fetching = true;
+            self.fetch_attempt = Some(Instant::now());
+        }
         let path = self.path();
         let base = self.base_input.clone();
         let limit = self.history_limit;
@@ -94,10 +110,192 @@ impl Branchroom {
                 ctx.request_repaint();
                 return;
             }
+            let needs_safety = matches!(&task, Task::History(_) | Task::Revert { .. })
+                || matches!(&task,Task::RawGit(args) if !read_only&&args.iter().any(|a|["merge","cherry-pick","reset","rebase","revert","commit","clean","rm","restore","apply","am","checkout","switch","stash","branch","worktree"].contains(&a.as_str())))
+                || matches!(&task,Task::Command{program,args,..} if program=="git"&&!read_only&&args.iter().any(|a|["merge","cherry-pick","reset","rebase","revert","commit","clean","rm","restore","apply","am","checkout","switch","stash","branch","worktree"].contains(&a.as_str())));
+            if needs_safety {
+                let args = match &task {
+                    Task::Command { args, .. } | Task::RawGit(args) => args.as_slice(),
+                    _ => &[],
+                };
+                if let Err(error) = branchroom::operation::advanced_safety(&path, args) {
+                    let _ = tx.send(Completed {
+                        output: Err(format!(
+                            "Could not save a safety point. The action was not run. {error}"
+                        )),
+                        state: None,
+                        detail: false,
+                        open: None,
+                        data: JobData::None,
+                    });
+                    ctx.request_repaint();
+                    process::reset_cancellation();
+                    return;
+                }
+            }
+            let journal = if !read_only
+                && !matches!(
+                    &task,
+                    Task::TimelineUndo { .. }
+                        | Task::TimelineHide { .. }
+                        | Task::Clone { .. }
+                        | Task::Init(_)
+                        | Task::PrepareCommit { .. }
+                        | Task::UpdateBranch { .. }
+                        | Task::CreatePullRequest(_)
+                        | Task::OpenPr { .. }
+                ) {
+                let label = Self::timeline_label(&task);
+                match branchroom::timeline::begin(&path, &label) {
+                    Ok(entry) => Some(entry),
+                    Err(error) => branchroom::timeline::unavailable(&path, &label, &error).ok(),
+                }
+            } else {
+                None
+            };
+            if matches!(&task, Task::Shelved { .. } | Task::TimelineRestore(_))
+                && journal.as_ref().is_none_or(|entry| entry.before.is_none())
+            {
+                process::reset_cancellation();
+                let _=tx.send(Completed{output:Err("A complete safety point could not be saved. Finish active conflicts or Git operations before changing this saved work".into()),state:Some(git::load(&path,&base,limit)),detail:false,open:None,data:JobData::None});
+                ctx.request_repaint();
+                return;
+            }
             let mut open = None;
             let mut data = JobData::None;
             let mut refresh_path = path.clone();
-            let (output, refresh, detail) = match task {
+            let (mut output, refresh, detail) = match task {
+                Task::TimelineLoad { item, before } => {
+                    let saved_state = if !item.action.is_empty() {
+                        branchroom::timeline::entries(&path)
+                            .ok()
+                            .and_then(|entries| entries.into_iter().find(|e| e.id == item.action))
+                            .and_then(|e| {
+                                if before {
+                                    e.before
+                                } else {
+                                    e.after.or(e.before)
+                                }
+                            })
+                    } else {
+                        None
+                    };
+                    let target = saved_state
+                        .as_ref()
+                        .map(|s| s.working.clone())
+                        .unwrap_or_else(|| item.target.clone());
+                    let history_target = saved_state
+                        .as_ref()
+                        .map(|s| s.head.clone().unwrap_or_default())
+                        .unwrap_or_else(|| item.target.clone());
+                    let graph = if let Some(state) = &saved_state {
+                        branchroom::timeline::state_graph(&path, state)
+                    } else if history_target.is_empty() {
+                        Ok(vec![])
+                    } else {
+                        branchroom::timeline::graph(&path, &history_target)
+                    };
+                    let patch = if item.kind == "Discarded file" {
+                        branchroom::recovery::preview(&path, &item.reference)
+                    } else if item.kind == "Shelved work" {
+                        git::git(
+                            &path,
+                            &[
+                                "stash",
+                                "show",
+                                "--include-untracked",
+                                "--patch",
+                                &item.target,
+                            ],
+                        )
+                    } else if target.is_empty() {
+                        Ok(String::new())
+                    } else {
+                        git::git(&path, &["show", "--stat", "--patch", "--format=", &target])
+                    };
+                    let result = graph.and_then(|graph| {
+                        patch.map(|patch| {
+                            data = JobData::TimelineDetail {
+                                root: path.clone(),
+                                key: item.key,
+                                target,
+                                graph,
+                                patch,
+                            };
+                            String::new()
+                        })
+                    });
+                    (result, false, false)
+                }
+                Task::TimelinePlan { item, before } => {
+                    let result =
+                        branchroom::timeline::plan_restore(&path, &item, before).map(|plan| {
+                            data = JobData::TimelinePlan {
+                                root: path.clone(),
+                                plan: Box::new(plan),
+                            };
+                            String::new()
+                        });
+                    (result, false, false)
+                }
+                Task::TimelineRestore(plan) => (
+                    branchroom::timeline::apply_restore(&path, &plan),
+                    true,
+                    false,
+                ),
+                Task::TimelineUndo { redo, id } => (
+                    branchroom::timeline::undo_redo(&path, redo, &id),
+                    true,
+                    false,
+                ),
+                Task::TimelineHide { id, hidden } => {
+                    let result = branchroom::timeline::set_visible(&path, &id, !hidden);
+                    (
+                        result.map(|_| "Updated timeline visibility".into()),
+                        true,
+                        false,
+                    )
+                }
+                Task::Shelved {
+                    reference,
+                    id,
+                    action,
+                } => {
+                    let result = git::resolve(&path, &reference).and_then(|current| {
+                        if current != id {
+                            return Err("The shelved work list changed. Select it again".into());
+                        }
+                        git::git(&path, &["stash", &action, &reference])
+                    });
+                    (result, true, false)
+                }
+
+                Task::RawGit(args) => (process::run("git", &path, &args), true, false),
+                Task::GraphApply(review) => {
+                    let result = branchroom::operation::apply(&path, &review);
+                    if result.is_ok()
+                        && matches!(
+                            review.kind,
+                            branchroom::operation::Kind::Commit { .. }
+                                | branchroom::operation::Kind::Amend { .. }
+                        )
+                    {
+                        data = JobData::Committed;
+                    }
+                    (result, true, false)
+                }
+                Task::ConflictSides(file) => {
+                    let versions = std::array::from_fn(|index| {
+                        git::git(&path, &["show", &format!(":{}:{file}", index + 1)])
+                            .unwrap_or_else(|_| "This version does not contain the file".into())
+                    });
+                    data = JobData::ConflictSides {
+                        root: path.clone(),
+                        path: file,
+                        versions,
+                    };
+                    (Ok(String::new()), false, false)
+                }
                 Task::CommitPullRequests(id) => {
                     let result =
                         branchroom::collaboration::commit_pull_requests(&path, &id).map(|prs| {
@@ -167,7 +365,12 @@ impl Branchroom {
                     false,
                 ),
                 Task::UpdateBranch { branch, baseline } => (
-                    branchroom::collaboration::update_branch(&path, &branch, &baseline),
+                    branchroom::operation::preview_update(&path, &branch, &baseline).map(
+                        |review| {
+                            data = JobData::GraphReview(Box::new(review));
+                            String::new()
+                        },
+                    ),
                     true,
                     false,
                 ),
@@ -230,6 +433,11 @@ impl Branchroom {
                     true,
                     false,
                 ),
+                Task::DeleteMerged { branch, expected } => (
+                    branchroom::collaboration::delete_merged_branch(&path, &branch, &expected),
+                    true,
+                    false,
+                ),
                 Task::CommitFiles(id) => {
                     let result = git::git(
                         &path,
@@ -237,7 +445,8 @@ impl Branchroom {
                             "diff-tree",
                             "--root",
                             "--no-commit-id",
-                            "--name-only",
+                            "--numstat",
+                            "--no-renames",
                             "--first-parent",
                             "-r",
                             "-z",
@@ -245,11 +454,7 @@ impl Branchroom {
                         ],
                     )
                     .map(|output| {
-                        let files = output
-                            .split('\0')
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_owned)
-                            .collect();
+                        let files = CommitFile::parse(&output);
                         data = JobData::Files { commit: id, files };
                         String::new()
                     });
@@ -270,8 +475,9 @@ impl Branchroom {
                     (result, refresh, !refresh)
                 }
                 Task::RemoveSnapshot(reference) => (
-                    snapshot::remove(&path, &reference)
-                        .map(|_| "Snapshot removed. Restore it from Removed snapshots.".into()),
+                    snapshot::remove(&path, &reference).map(|_| {
+                        "Safety point deleted from view. Restore it from its timeline entry.".into()
+                    }),
                     true,
                     false,
                 ),
@@ -379,6 +585,14 @@ impl Branchroom {
             };
             // Failed merges still change repository state and can leave an operation to resolve.
             process::reset_cancellation();
+            if let Some(entry) = journal
+                && let Err(error) = branchroom::timeline::finish(&path, entry, output.is_ok())
+            {
+                output = Err(format!(
+                    "{}\nThe action history could not be updated: {error}. Existing safety points were retained",
+                    output.unwrap_or_else(|e| e)
+                ));
+            }
             let state = refresh.then(|| git::load(&refresh_path, &base, limit));
             let _ = tx.send(Completed {
                 output,

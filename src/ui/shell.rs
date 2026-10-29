@@ -9,7 +9,7 @@ impl Page {
             Self::Snapshots => "Time Machine",
             Self::Stashes => "Shelved work",
             Self::Branches => "Branches",
-            Self::Compare => "History & recovery",
+            Self::Compare => "Compare",
             Self::Merge => "Merge",
             Self::Conflicts => "Conflicts",
             Self::Remotes => "Repositories",
@@ -21,6 +21,7 @@ impl Page {
 impl Branchroom {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_graph_action(ctx);
             self.pending = None;
             self.confirmation_input.clear();
             self.command_bar_open = false;
@@ -39,8 +40,32 @@ impl Branchroom {
             || self.capture_open
             || self.switch_target.is_some()
             || self.close_pending
+            || self.manipulation.advanced
         {
             return;
+        }
+        if self.manipulation.active() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter)) {
+                self.confirm_graph_action(ctx);
+            }
+            return;
+        }
+        if !ctx
+            .memory(|m| m.focused())
+            .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
+            && self.repo.is_some()
+            && self.receiver.is_none()
+        {
+            if ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+            }) {
+                self.timeline_undo(true, ctx);
+                return;
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Z)) {
+                self.timeline_undo(false, ctx);
+                return;
+            }
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::O))
             && self.receiver.is_none()
@@ -102,7 +127,6 @@ impl Branchroom {
                                 Page::Branches,
                                 Page::Merge,
                                 Page::Compare,
-                                Page::Stashes,
                             ] {
                                 if ui.button(page.title()).clicked() {
                                     self.page = page;
@@ -151,11 +175,19 @@ impl Branchroom {
                         ui.add_enabled(false, egui::Button::new("Sync"));
                     }
                     if ui
-                        .button(if ctx.content_rect().width() < 800. {
-                            "Commands"
-                        } else {
-                            "Commands  Ctrl+K"
-                        })
+                        .add_sized(
+                            [if compact { 100. } else { 220. }, 28.],
+                            egui::Button::new(
+                                RichText::new(if compact {
+                                    "Search  Ctrl+K"
+                                } else {
+                                    "Search or run a command   Ctrl+K"
+                                })
+                                .color(MUTED()),
+                            )
+                            .fill(PAPER())
+                            .stroke(egui::Stroke::new(1., INPUT_BORDER())),
+                        )
                         .on_hover_text("Open command center · Ctrl+K")
                         .clicked()
                     {
@@ -176,7 +208,7 @@ impl Branchroom {
                 });
             });
         egui::Panel::bottom("workspace_status")
-            .exact_size(36.)
+            .exact_size(44.)
             .frame(egui::Frame::new().fill(SIDEBAR()).inner_margin(6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -222,22 +254,6 @@ impl Branchroom {
                     {
                         self.activity_open = !self.activity_open;
                     }
-                    if ui
-                        .small_button("+")
-                        .on_hover_text("Increase interface scale")
-                        .clicked()
-                    {
-                        ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(2.));
-                        self.settings.ui_zoom = ctx.zoom_factor();
-                    }
-                    if ui
-                        .small_button("−")
-                        .on_hover_text("Decrease interface scale")
-                        .clicked()
-                    {
-                        ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.75));
-                        self.settings.ui_zoom = ctx.zoom_factor();
-                    }
                 });
             });
         if self.receiver.is_some() {
@@ -247,18 +263,43 @@ impl Branchroom {
                 .map(|p| p.clone())
                 .unwrap_or_default();
             if !progress.is_empty() {
-                egui::Panel::bottom("transfer_progress").show(ui, |ui| {
-                    ui.label(progress);
-                });
+                egui::Area::new(egui::Id::unique("operation_progress_toast"))
+                    .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16., -48.))
+                    .order(egui::Order::Foreground)
+                    .show(ctx, |ui| {
+                        surface().show(ui, |ui| {
+                            ui.set_max_width((ctx.content_rect().width() - 64.).clamp(160., 340.));
+                            ui.label(RichText::new(&self.busy).strong());
+                            ui.label(progress);
+                        });
+                    });
             }
         }
+        self.graph_preview_bar(ui, ctx);
         if self.activity_open {
             egui::Panel::bottom("activity_drawer")
                 .resizable(true)
                 .default_size(150.)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        section(ui, "ACTIVITY");
+                        section(ui, "Activity");
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("Increase interface scale")
+                            .clicked()
+                        {
+                            ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(2.));
+                            self.settings.ui_zoom = ctx.zoom_factor();
+                        }
+                        if ui
+                            .small_button("−")
+                            .on_hover_text("Decrease interface scale")
+                            .clicked()
+                        {
+                            ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.75));
+                            self.settings.ui_zoom = ctx.zoom_factor();
+                        }
+
                         if ui.button("Copy output").clicked() {
                             ctx.copy_text(self.output.clone());
                         }
@@ -292,7 +333,7 @@ impl Branchroom {
                 });
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(0)).show(ui, |ui| {
-            ui.add_enabled_ui(self.pending.is_none() && self.form.is_none(), |ui| {
+            ui.add_enabled_ui(self.pending.is_none() && self.form.is_none() && (!self.manipulation.active()||egui::DragAndDrop::has_payload_of_type::<manipulation::Payload>(ctx)), |ui| {
                 if self.repo.is_none() && !matches!(self.page, Page::Remotes | Page::Settings) { self.welcome(ui, ctx); return; }
                 if let Some(repo) = &self.repo {
                     let count = repo.changes.iter().filter(|c| c.conflict()).count();
@@ -303,7 +344,7 @@ impl Branchroom {
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
                                     if count > 0 {
-                                        badge(ui, &format!("{count} conflicts"), DANGER());
+                                        badge(ui, &format!("{count} {}",if count==1{"conflict"}else{"conflicts"}), DANGER());
                                         ui.label(
                                             "Some files need your attention before you can continue.",
                                         );
@@ -326,15 +367,24 @@ impl Branchroom {
                     }
                 }
 
-                if ctx.content_rect().width() >= 800. && matches!(self.page, Page::History | Page::Branches | Page::Merge | Page::Compare | Page::Snapshots | Page::Stashes) { ui.horizontal_wrapped(|ui| {
-                    let pages: &[Page] = if matches!(self.page, Page::Snapshots | Page::Stashes) { &[Page::Snapshots, Page::Stashes, Page::Compare] } else { &[Page::History, Page::Branches, Page::Merge, Page::Compare] };
-                    for &page in pages { let label = match page { Page::Snapshots => "Saved points", Page::History => "Commit graph", _ => page.title() }; if ui.selectable_label(self.page == page, label).clicked() { self.page=page; } }
-                }); }
+                if matches!(self.page, Page::History | Page::Branches | Page::Merge | Page::Compare) {
+                    self.load_graph_context(ctx);
+                    ui.horizontal_wrapped(|ui| {
+                        for (page, label) in [(Page::History, "Commits"), (Page::Branches, "Branch map"), (Page::Compare, "Compare")] {
+                            if ui.selectable_label(self.page == page, label).clicked() { self.page = page; }
+                        }
+                        ui.menu_button("Advanced", |ui| {
+                            if ui.button("Preview a graph action").clicked(){self.open_graph_form();ui.close();}
+                            if ui.button("History operation forms").clicked(){self.page=Page::Compare;self.comparison.advanced=true;ui.close();}
+                            if ui.button("Merge branches").clicked() { self.page = Page::Merge; ui.close(); }
+                        });
+                    });
+                }
                 match self.page {
                     Page::History => self.history(ui, ctx), Page::Snapshots => self.snapshots(ui, ctx), Page::Changes => self.changes(ui, ctx),
                     Page::Compare => { egui::Frame::new().inner_margin(20).show(ui, |ui| self.compare(ui, ctx)); },
                     Page::Merge => { egui::Frame::new().inner_margin(20).show(ui, |ui| self.merge_page(ui, ctx)); },
-                    Page::Branches => self.branches(ui, ctx), Page::Stashes => self.stashes(ui, ctx),
+                    Page::Branches => self.branches(ui, ctx), Page::Stashes => self.snapshots(ui, ctx),
                     page => { egui::Frame::new().inner_margin(24).show(ui, |ui| { egui::ScrollArea::vertical().id_salt("secondary_page").show(ui, |ui| match page { Page::Conflicts => self.conflicts(ui,ctx), Page::Remotes => self.remotes(ui,ctx), Page::Github => self.github(ui,ctx), Page::Tools => self.tools(ui,ctx), Page::Settings => self.preferences(ui), _ => {} }); }); }
                 }
             });
@@ -585,25 +635,38 @@ impl Branchroom {
         let upstream = branch.map(|b| b.upstream.clone()).unwrap_or_default();
         let (ahead, behind) = repo.sync_counts.unwrap_or_default();
         let remote_upstream = repo.branches.iter().any(|b| b.remote && b.name == upstream);
-        let label = if !remote_upstream {
+        let label = if self.fetch_error {
+            "Offline - retry".to_owned()
+        } else if !remote_upstream {
             "Sync · no remote".to_owned()
         } else if repo.sync_counts.is_none() {
             "Sync · unavailable".to_owned()
+        } else if ahead > 0 && behind > 0 {
+            format!("Diverged · {ahead} up · {behind} down")
+        } else if behind > 0 {
+            format!("Pull {behind}")
+        } else if ahead > 0 {
+            format!("Push {ahead}")
         } else {
-            format!("Sync  ↑{ahead}  ↓{behind}")
+            "Up to date".to_owned()
+        };
+        let state_color = if self.fetch_error {
+            DANGER()
+        } else if ahead > 0 && behind > 0 {
+            WARNING()
+        } else if ahead == 0 && behind == 0 && remote_upstream && repo.sync_counts.is_some() {
+            SUCCESS()
+        } else {
+            ACCENT()
         };
         let sync = ui.menu_button(
-            if ctx.content_rect().width() < 800. {
-                if repo.sync_counts.is_some() { format!("↑{ahead} ↓{behind}") } else { "Sync".to_owned() }
-            } else {
-                label
-            },
+            RichText::new(label).color(state_color),
             |ui| {
-                ui.set_min_width(280.);
+                ui.set_max_width((ctx.content_rect().width() - 48.).clamp(180., 360.));
                 ui.label(RichText::new("Sync this branch").strong());
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     badge(ui, "This computer", ACCENT());
-                    ui.label(if repo.sync_counts.is_some() { format!("↑ {ahead}   ↓ {behind}") } else { "Status unavailable".to_owned() });
+                    ui.label(if repo.sync_counts.is_some() { format!("{ahead} to push · {behind} to pull") } else { "Status unavailable".to_owned() });
                     badge(
                         ui,
                         if remote_upstream {
@@ -628,10 +691,15 @@ impl Branchroom {
                     "The branch matches the last fetched remote state.".to_owned()
                 };
                 subtitle(ui, &message);
-                subtitle(
-                    ui,
-                    "Counts reflect the last fetch; check for updates first.",
-                );
+                subtitle(ui, &self.last_fetch.map(|t| format!("Checked {} min ago", t.elapsed().as_secs() / 60)).unwrap_or_else(|| "Not checked yet".into()));
+                if self.fetch_error { subtitle(ui, "Could not reach the remote. Check your connection and credentials, then retry."); }
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(300.), 44.), egui::Sense::hover());
+                let left = rect.left_center() + egui::vec2(12., 0.);
+                let right = rect.right_center() - egui::vec2(12., 0.);
+                ui.painter().line_segment([left, right], egui::Stroke::new(2., CONNECTOR()));
+                ui.painter().circle_filled(left, 5., ACCENT());
+                ui.painter().circle_filled(right, 5., if ahead == 0 && behind == 0 { SUCCESS() } else { WARNING() });
+                ui.painter().text(rect.center(), egui::Align2::CENTER_BOTTOM, format!("{ahead} outgoing / {behind} incoming"), egui::FontId::proportional(12.), INK());
                 ui.add_enabled_ui(writable && self.receiver.is_none(), |ui| {
                     if ui.button("Check for updates").clicked() {
                         self.execute(
@@ -726,10 +794,12 @@ impl Branchroom {
             let destination=remotes.into_iter().find_map(|remote|upstream.strip_prefix(&format!("{remote}/")).map(|branch|(remote,branch)));
             if let Some((remote,branch))=destination {
                 let target=format!("refs/heads/{branch}"); let refspec=format!("refs/heads/{}:{target}",repo.branch);
-                ui.label(format!("Destination: {remote}/{branch}"));
+                subtitle(ui, &format!("Destination: {remote}/{branch}"));
                 if ui.button("Push current branch…").clicked(){self.propose("Push current branch",&format!("Push {} to {remote}/{branch}. Other branches are not included.",repo.branch),&["push",remote,&refspec]);ui.close();}
                 let expected=repo.branches.iter().find(|b|b.remote&&b.name==upstream).map(|b|b.id.as_str());
-                if ui.add_enabled(expected.is_some(),egui::Button::new("Force push with lease…")).clicked(){let lease=format!("--force-with-lease={target}:{}",expected.unwrap());self.propose("Force push with lease",&format!("Replace only {remote}/{branch} if its head still matches the last fetched commit."),&["push",&lease,remote,&refspec]);ui.close();}
+                ui.separator();
+                ui.label(RichText::new("Dangerous").color(DANGER()).strong());
+                if ui.add_enabled(expected.is_some(),egui::Button::new(RichText::new("Force push with lease…").color(DANGER()))).clicked(){let lease=format!("--force-with-lease={target}:{}",expected.unwrap());self.propose("Force push with lease",&format!("Replace only {remote}/{branch} if its head still matches the last fetched commit."),&["push",&lease,remote,&refspec]);ui.close();}
                 if expected.is_none(){subtitle(ui,"Fetch the remote branch before using a force push lease.");}
             } else { ui.label("This branch has no remote upstream."); if ui.button("Publish branch…").clicked(){self.form("Publish branch","Push this branch to the selected remote and remember its upstream.","git",&["push","--set-upstream"],&[("Remote","origin"),("Branch",&repo.branch)],&[]);ui.close();} }
         });

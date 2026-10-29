@@ -2,6 +2,12 @@
 use branchroom::settings::Settings;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 
+// Shared scale: compact metadata, readable controls, and page headings.
+pub(super) const TEXT_SMALL: f32 = 12.;
+pub(super) const TEXT_BODY: f32 = 14.;
+pub(super) const TEXT_TITLE: f32 = 24.;
+pub(super) const SPACE: [f32; 6] = [4., 8., 12., 16., 24., 32.];
+
 // Semantic colors are selected together so custom-painted views follow the theme.
 thread_local! { static LIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 fn color(dark: (u8, u8, u8), light: (u8, u8, u8)) -> Color32 {
@@ -145,25 +151,26 @@ pub(super) fn install(ctx: &egui::Context, light: bool) {
     style.visuals.widgets.active.bg_fill = SELECTED();
     style.visuals.widgets.active.weak_bg_fill = SELECTED();
     style.visuals.widgets.active.bg_stroke = Stroke::new(1.5, ACCENT());
-    style.spacing.item_spacing = egui::vec2(10., 8.);
+    style.spacing.item_spacing = egui::vec2(SPACE[2], SPACE[1]);
     style.spacing.scroll = egui::style::ScrollStyle::solid();
-    style.spacing.button_padding = egui::vec2(12., 7.);
+    style.spacing.button_padding = egui::vec2(SPACE[2], SPACE[1]);
     style.spacing.interact_size = egui::vec2(32., 32.);
     style.spacing.window_margin = egui::Margin::same(20);
     style.animation_time = 0.;
     for (role, size) in [
-        (egui::TextStyle::Heading, 24.),
-        (egui::TextStyle::Body, 14.),
-        (egui::TextStyle::Button, 14.),
-        (egui::TextStyle::Small, 12.),
+        (egui::TextStyle::Heading, TEXT_TITLE),
+        (egui::TextStyle::Body, TEXT_BODY),
+        (egui::TextStyle::Button, TEXT_BODY),
+        (egui::TextStyle::Small, TEXT_SMALL),
     ] {
         style
             .text_styles
             .insert(role, egui::FontId::proportional(size));
     }
-    style
-        .text_styles
-        .insert(egui::TextStyle::Monospace, egui::FontId::monospace(13.));
+    style.text_styles.insert(
+        egui::TextStyle::Monospace,
+        egui::FontId::monospace(TEXT_BODY),
+    );
     ctx.set_style_of(theme, style);
     ctx.set_theme(theme);
 }

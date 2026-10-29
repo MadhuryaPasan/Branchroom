@@ -18,6 +18,12 @@ pub fn save(root: &Path, path: &str, content: &str, original: &str) -> Result<St
     if std::fs::read_to_string(&target).map_err(|e| e.to_string())? != original {
         return Err("This file changed outside the editor. Reload it before saving.".into());
     }
+    let safety = crate::recovery::backup(root, path)?;
     crate::storage::write_atomic(&target, content.as_bytes())?;
-    git(root, &["add", "--", path])
+    git(root, &["add", "--", path]).map(|output| {
+        format!(
+            "{output}\nPrevious file saved in Time Machine: {}",
+            safety.id
+        )
+    })
 }

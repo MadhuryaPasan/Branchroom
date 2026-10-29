@@ -4,6 +4,9 @@ use super::*;
 pub(super) struct HistoryView {
     dataset: std::sync::Weak<RepoState>,
     query: String,
+    search_key: String,
+    search_receiver: Option<Receiver<Result<std::collections::HashSet<String>>>>,
+    search_ids: Option<Result<std::collections::HashSet<String>>>,
     visible: std::sync::Arc<Vec<usize>>,
     pub(super) resolved_widths: [f32; 4],
 }
@@ -17,17 +20,103 @@ impl HistoryView {
             .dataset
             .upgrade()
             .is_some_and(|cached| std::sync::Arc::ptr_eq(&cached, repo));
+        let structured = filter_terms(query).iter().any(|t| {
+            ["file:", "after:", "before:", "author:", "branch:"]
+                .iter()
+                .any(|p| t.starts_with(p))
+        });
+        if structured {
+            let tips = repo
+                .branches
+                .iter()
+                .map(|b| b.id.as_str())
+                .collect::<String>();
+            let key = format!("{}:{}:{}:{}", repo.root.display(), repo.head, tips, query);
+            if let Some(rx) = &self.search_receiver
+                && let Ok(result) = rx.try_recv()
+            {
+                self.search_ids = Some(result);
+                self.search_receiver = None;
+                self.query.clear();
+            }
+            if self.search_key != key && self.search_receiver.is_none() {
+                self.search_key = key;
+                self.search_ids = None;
+                let (tx, rx) = mpsc::channel();
+                self.search_receiver = Some(rx);
+                let root = repo.root.clone();
+                let query = query.to_owned();
+                std::thread::spawn(move || {
+                    let mut args = process::strings(&[
+                        "log",
+                        "--branches",
+                        "--remotes",
+                        "--tags",
+                        "HEAD",
+                        "--format=%H",
+                        "-z",
+                        "--fixed-strings",
+                    ]);
+                    let mut files = vec![];
+                    for token in filter_terms(&query) {
+                        if let Some(file) = token.strip_prefix("file:") {
+                            files.push(file.to_owned());
+                        } else if let Some(author) = token.strip_prefix("author:") {
+                            args.push(format!("--author={author}"));
+                        } else if let Some(branch) = token.strip_prefix("branch:") {
+                            match git::resolve(&root, branch) {
+                                Ok(id) => {
+                                    args.retain(|a| {
+                                        !["--branches", "--remotes", "--tags", "HEAD"]
+                                            .contains(&a.as_str())
+                                    });
+                                    args.push(id);
+                                }
+                                Err(error) => {
+                                    let _ = tx.send(Err(error));
+                                    return;
+                                }
+                            }
+                        } else if let Some(date) = token.strip_prefix("after:") {
+                            args.push(format!("--since={date}"));
+                        } else if let Some(date) = token.strip_prefix("before:") {
+                            args.push(format!("--until={date}"));
+                        } else {
+                            args.push(format!("--grep={token}"));
+                        }
+                    }
+                    args.push("--".into());
+                    args.extend(files);
+                    let result = process::stdout("git", &root, &args).map(|out| {
+                        out.split_terminator('\0')
+                            .map(|s| s.trim().to_owned())
+                            .collect()
+                    });
+                    let _ = tx.send(result);
+                });
+            }
+        }
         if !same || query != self.query {
             let needle = query.to_lowercase();
             self.visible = std::sync::Arc::new(
-                repo.branch_commits
+                repo.commits
                     .iter()
                     .enumerate()
                     .filter_map(|(i, c)| {
-                        (needle.is_empty()
-                            || format!("{} {} {} {}", c.subject, c.author, c.refs, c.id)
+                        (if structured {
+                            self.search_ids
+                                .as_ref()
+                                .and_then(|r| r.as_ref().ok())
+                                .is_some_and(|ids| ids.contains(&c.id))
+                        } else {
+                            needle.is_empty()
+                                || format!(
+                                    "{} {} {} {} {}",
+                                    c.subject, c.author, c.refs, c.id, c.date
+                                )
                                 .to_lowercase()
-                                .contains(&needle))
+                                .contains(&needle)
+                        })
                         .then_some(i)
                     })
                     .collect(),
@@ -54,8 +143,8 @@ impl Branchroom {
                         ui,
                         &format!(
                             "{} {}",
-                            repo.branch_commits.len(),
-                            if repo.branch_commits.len() == 1 {
+                            repo.commits.len(),
+                            if repo.commits.len() == 1 {
                                 "commit"
                             } else {
                                 "commits"
@@ -63,7 +152,31 @@ impl Branchroom {
                         ),
                         MUTED(),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                });
+                ui.add_space(12.);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Filter").color(MUTED()));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.query)
+                            .desired_width((ui.available_width() * 0.38).clamp(140., 360.))
+                            .hint_text("Message, author, branch, file:path, after:YYYY-MM-DD"),
+                    );
+                    if ctx.content_rect().width()>=800. {
+                        badge(ui, &repo.branch, ACCENT());
+                        ui.label(RichText::new("Checked-out branch").size(12.).color(MUTED())).on_hover_text("All loaded branches share this graph. Select a branch label to inspect its tip.");
+                    }
+                    ui.menu_button("View", |ui| {
+                        egui::CollapsingHeader::new("Graph gestures").show(ui,|ui| {
+                            ui.set_max_width(300.);
+                            ui.label("Drag a branch label onto another branch to merge");
+                            ui.label("Drag a commit onto a branch to copy it");
+                            ui.label("Drop near a commit's top or bottom edge to reorder");
+                            ui.label("Drop onto a commit's center to combine commits");
+                            ui.label("Drag the current branch label to an earlier commit to undo");
+                            ui.label("Drag included working changes onto a commit to amend or fix up");
+                            if ui.button("Open keyboard form").clicked(){self.manipulation.advanced=true;ui.close();}
+                        });
+                    ui.vertical(|ui| {
                         if ui
                             .selectable_label(self.inspector_open, "Inspector")
                             .clicked()
@@ -73,19 +186,8 @@ impl Branchroom {
                         ui.selectable_value(&mut self.history_list, true, "List");
                         ui.selectable_value(&mut self.history_list, false, "Graph");
                     });
-                });
-                ui.add_space(12.);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Filter").color(MUTED()));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.query)
-                            .desired_width((ui.available_width() * 0.38).clamp(140., 360.))
-                            .hint_text("Message, author, branch, tag, or commit ID"),
-                    );
-                    if ctx.content_rect().width()>=800. {
-                        badge(ui, &repo.branch, ACCENT());
-                        ui.label(RichText::new("Current branch").size(12.).color(MUTED())).on_hover_text("Only commits reachable from the checked-out branch, including changes already merged into it. Switch branches to see another branch's history.");
-                    }
+
+                        ui.add(egui::Slider::new(&mut self.graph_zoom, 0.75..=2.5).text("Graph zoom"));
                     ui.menu_button("Columns", |ui| {
                         ui.set_min_width(270.);
                         subtitle(ui,"Drag the header dividers or enter widths here.");
@@ -105,36 +207,14 @@ impl Branchroom {
                         ui.selectable_value(&mut self.density, 1, "Comfortable");
                         ui.selectable_value(&mut self.density, 2, "Spacious");
                     });
+                    });
                     if !self.query.is_empty() && ui.small_button("Clear").clicked() {
                         self.query.clear();
                     }
                 });
             });
         self.patch_drawer(ui);
-        if self.inspector_open {
-            if ui.available_width() >= 800. {
-                egui::Panel::right("commit_inspector")
-                    .resizable(true)
-                    .default_size(300.)
-                    .size_range(260.0..=420.0)
-                    .frame(egui::Frame::new().fill(SURFACE()).inner_margin(20))
-                    .show(ui, |ui| {
-                        self.commit_inspector(ui, ctx);
-                    });
-            } else {
-                let mut open = true;
-                egui::Window::new("Commit inspector")
-                    .open(&mut open)
-                    .default_width(310.)
-                    .max_height((ctx.content_rect().height() - 120.).max(150.))
-                    .show(ctx, |ui| {
-                        self.commit_inspector(ui, ctx);
-                    });
-                if !open {
-                    self.inspector_open = false;
-                }
-            }
-        }
+        self.graph_inspector(ui, ctx);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -142,12 +222,87 @@ impl Branchroom {
                     .inner_margin(egui::Margin::symmetric(12, 0)),
             )
             .show(ui, |ui| {
-                let commits = &repo.branch_commits;
+                let working = surface().show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(24., 24.), egui::Sense::hover());
+                        for segment in 0..8 {
+                            let angle = segment as f32 * std::f32::consts::TAU / 8.;
+                            let point = |a: f32| rect.center() + egui::vec2(a.cos(), a.sin()) * 7.;
+                            ui.painter().line_segment(
+                                [point(angle), point(angle + 0.45)],
+                                egui::Stroke::new(1.5, MUTED()),
+                            );
+                        }
+                        let source = ui.add(
+                            egui::Label::new(format!(
+                                "Working copy - {} changed files",
+                                repo.changes.len()
+                            ))
+                            .sense(egui::Sense::drag()),
+                        );
+                        source.dnd_set_drag_payload(manipulation::Payload::Working);
+                        if ui
+                            .add_enabled(
+                                !repo.changes.is_empty(),
+                                egui::Button::new("Commit changes").fill(PRIMARY()),
+                            )
+                            .clicked()
+                        {
+                            self.page = Page::Changes;
+                            self.compact_changes_tab = 2;
+                        }
+                    });
+                });
+                self.graph_drop(ui, &working.response, manipulation::Target::Working);
+                ui.horizontal_wrapped(|ui| {
+                    for branch in repo.branches.iter().filter(|b| !b.remote) {
+                        let lane = repo
+                            .commits
+                            .iter()
+                            .position(|c| c.id == branch.id)
+                            .and_then(|i| self.graph.get(i))
+                            .map(|r| r.lane);
+                        if let Some(lane) = lane {
+                            let selected = self.selected_commit == branch.id;
+                            let response = ui.add(
+                                egui::Button::selectable(
+                                    selected,
+                                    RichText::new(&branch.name).color(lane_color(lane)),
+                                )
+                                .sense(egui::Sense::click_and_drag()),
+                            );
+                            response.dnd_set_drag_payload(manipulation::Payload::Branch {
+                                name: branch.name.clone(),
+                                current: branch.current,
+                                reference: format!("refs/heads/{}", branch.name),
+                            });
+                            self.graph_drop(
+                                ui,
+                                &response,
+                                manipulation::Target::Branch(&format!(
+                                    "refs/heads/{}",
+                                    branch.name
+                                )),
+                            );
+                            if response.clicked() {
+                                self.selected_commit = branch.id.clone();
+                                self.inspector_open = true;
+                            }
+                        }
+                    }
+                });
+                let commits = &repo.commits;
                 let visible = self.history_view.visible(&repo, &self.query);
                 let rows = self.graph.clone();
                 if visible.is_empty() {
                     ui.add_space(40.);
-                    ui.heading(if self.query.is_empty() {
+                    if let Some(Err(error)) = &self.history_view.search_ids {
+                        ui.colored_label(DANGER(), error);
+                    }
+                    ui.heading(if self.history_view.search_receiver.is_some() {
+                        "Searching history"
+                    } else if self.query.is_empty() {
                         "No commits yet"
                     } else {
                         "No matching commits"
@@ -157,7 +312,7 @@ impl Branchroom {
                         if self.query.is_empty() {
                             "Stage your files in Changes to create the first commit."
                         } else {
-                            "Try a different message, author, reference, or commit SHA."
+                            "Try a different message, author, branch, tag, file or date."
                         },
                     );
                     if !self.query.is_empty() && ui.button("Clear filter").clicked() {
@@ -165,9 +320,11 @@ impl Branchroom {
                     }
                 } else {
                     let view_width = ui.available_width();
-                    let required_graph =
-                        (rows.iter().map(|r| r.width).max().unwrap_or(1) as f32 * 16. + 34.)
-                            .clamp(72., 4096.);
+                    let required_graph = (rows.iter().map(|r| r.width).max().unwrap_or(1) as f32
+                        * 16.
+                        * self.graph_zoom
+                        + 34.)
+                        .clamp(72., 4096.);
                     let columns = &self.settings.history_columns;
                     let graph_width = if self.history_list {
                         24.
@@ -191,8 +348,12 @@ impl Branchroom {
                     let widths = [graph_width, commit_width, author_width, date_width];
                     self.history_view.resolved_widths = widths;
                     let table_width = widths.iter().sum::<f32>();
-                    let row_height = [36., 48., 60.][self.density.min(2)];
+                    let row_height = [36., 48., 60.][self.density.min(2)] * self.graph_zoom;
                     egui::ScrollArea::horizontal()
+                        .scroll_source(egui::scroll_area::ScrollSource {
+                            drag: egui::scroll_area::DragScroll::Always,
+                            ..Default::default()
+                        })
                         .id_salt("history_horizontal")
                         .auto_shrink([false, true])
                         .show(ui, |ui| {
@@ -210,7 +371,7 @@ impl Branchroom {
                                 header.right(),
                             ];
                             for (column, label) in
-                                ["GRAPH", "COMMIT", "AUTHOR", "WHEN"].iter().enumerate()
+                                ["Graph", "Commit", "Author", "When"].iter().enumerate()
                             {
                                 if (column == 0 && self.history_list)
                                     || (column == 2 && !show_author)
@@ -280,6 +441,10 @@ impl Branchroom {
                             }
                             ui.spacing_mut().item_spacing.y = 0.;
                             egui::ScrollArea::vertical()
+                                .scroll_source(egui::scroll_area::ScrollSource {
+                                    drag: egui::scroll_area::DragScroll::Always,
+                                    ..Default::default()
+                                })
                                 .id_salt("history_rows")
                                 .max_height((ui.available_height() - 48.).max(100.))
                                 .auto_shrink([false, false])
@@ -287,12 +452,28 @@ impl Branchroom {
                                     for &index in &visible[range] {
                                         let commit = &commits[index];
                                         let selected = self.selected_commit == commit.id;
+                                        let mut decorations = commit.refs.replace("HEAD -> ", "");
+                                        if let Some(Ok(data)) = &self.graph_context.data {
+                                            for pr in data.reviews.iter().filter(|p| {
+                                                p.commit == commit.id
+                                                    || self
+                                                        .graph_context
+                                                        .linked_to(&repo.root, &commit.id, p.number)
+                                            }) {
+                                                decorations.push_str(&format!(
+                                                    "  PR #{} {} - {}",
+                                                    pr.number, pr.state, pr.ci
+                                                ));
+                                            }
+                                        }
+
                                         let response = ui.add_sized(
                                             [table_width, row_height],
                                             egui::Button::new("")
                                                 .selected(selected)
                                                 .frame_when_inactive(selected)
-                                                .corner_radius(0),
+                                                .corner_radius(0)
+                                                .sense(egui::Sense::click_and_drag()),
                                         );
                                         response.widget_info(|| {
                                             egui::WidgetInfo::labeled(
@@ -304,12 +485,37 @@ impl Branchroom {
                                                 ),
                                             )
                                         });
+                                        response.dnd_set_drag_payload(
+                                            manipulation::Payload::Commit(commit.id.clone()),
+                                        );
+                                        let pointer_y = ui
+                                            .input(|i| i.pointer.interact_pos())
+                                            .map(|p| p.y - response.rect.top())
+                                            .unwrap_or(response.rect.height() / 2.);
+                                        let edge = if pointer_y < response.rect.height() * 0.25 {
+                                            -1
+                                        } else if pointer_y > response.rect.height() * 0.75 {
+                                            1
+                                        } else {
+                                            0
+                                        };
+                                        self.graph_drop(
+                                            ui,
+                                            &response,
+                                            manipulation::Target::Commit {
+                                                id: &commit.id,
+                                                edge,
+                                            },
+                                        );
                                         let rect = response.rect;
                                         let row = &rows[index];
                                         let mid = rect.center().y;
                                         if !self.history_list {
-                                            let x =
-                                                |lane: usize| rect.left() + 17. + lane as f32 * 16.;
+                                            let x = |lane: usize| {
+                                                rect.left()
+                                                    + 17.
+                                                    + lane as f32 * 16. * self.graph_zoom
+                                            };
                                             let painter = ui.painter().with_clip_rect(
                                                 egui::Rect::from_min_max(
                                                     rect.min,
@@ -369,7 +575,7 @@ impl Branchroom {
                                             egui::pos2(
                                                 commit_end - 10.,
                                                 rect.bottom()
-                                                    - if !commit.refs.is_empty()
+                                                    - if !decorations.is_empty()
                                                         && row_height >= 48.
                                                     {
                                                         14.
@@ -379,10 +585,22 @@ impl Branchroom {
                                             ),
                                         );
                                         text_at(ui, title_rect, &commit.subject, 14., INK(), false);
+                                        if show_author {
+                                            let center =
+                                                egui::pos2(commit_end + 18., rect.center().y);
+                                            ui.painter().circle_filled(center, 10., SELECTED());
+                                            ui.painter().text(
+                                                center,
+                                                egui::Align2::CENTER_CENTER,
+                                                commit.author.chars().next().unwrap_or('?'),
+                                                egui::FontId::proportional(12.),
+                                                INK(),
+                                            );
+                                        }
                                         text_at(
                                             ui,
                                             egui::Rect::from_min_max(
-                                                egui::pos2(commit_end + 10., rect.top()),
+                                                egui::pos2(commit_end + 34., rect.top()),
                                                 egui::pos2(author_end - 8., rect.bottom()),
                                             ),
                                             &commit.author,
@@ -401,11 +619,11 @@ impl Branchroom {
                                             MUTED(),
                                             false,
                                         );
-                                        if !commit.refs.is_empty() && row_height >= 48. {
-                                            let label = commit.refs.replace("HEAD -> ", "");
+                                        if !decorations.is_empty() && row_height >= 48. {
+                                            let label = decorations;
                                             let ref_width = (label.chars().count() as f32 * 6.5
                                                 + 12.)
-                                                .min((commit_end - start - 10.).max(0.) * 0.8);
+                                                .min((commit_end - start - 10.).max(0.));
                                             let badge_rect = egui::Rect::from_min_size(
                                                 egui::pos2(start, rect.bottom() - 17.),
                                                 egui::vec2(ref_width, 15.),
@@ -420,14 +638,11 @@ impl Branchroom {
                                                 false,
                                             );
                                         }
-                                        let response = response.on_hover_text(format!(
-                                            "{}\n{}\n{} · {}\n{}",
-                                            commit.subject,
-                                            commit.refs,
-                                            commit.author,
-                                            commit.date,
-                                            commit.id
-                                        ));
+                                        if response.hovered()
+                                            && ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO)
+                                        {
+                                            self.selected_commit = commit.id.clone();
+                                        }
                                         if response.double_clicked() {
                                             self.selected_commit = commit.id.clone();
                                             self.view_commit(&commit.id, ctx);
@@ -436,7 +651,7 @@ impl Branchroom {
                                             self.inspector_open = true;
                                             self.commit_files.clear();
                                             self.commit_files_for = String::new();
-                                            self.execute(Task::CommitFiles(commit.id.clone()), ctx);
+                                            self.commit_files_requested.clear();
                                         }
                                         response.context_menu(|ui| {
                                             if ui.button("View patch").clicked() {
@@ -454,21 +669,48 @@ impl Branchroom {
                         });
                 }
                 ui.add_space(16.);
-                if repo.branch_commits.len() >= self.history_limit {
+                if repo.commits.len() >= self.history_limit {
                     if ui
                         .button(format!(
                             "Load 500 more commits · {} loaded",
-                            repo.branch_commits.len()
+                            repo.commits.len()
                         ))
                         .clicked()
                     {
                         self.history_limit += 500;
                         self.refresh_at(self.path(), ctx);
                     }
-                } else if !repo.branch_commits.is_empty() {
+                } else if !repo.commits.is_empty() {
                     subtitle(ui, "Beginning of this branch's history");
                 }
             });
+    }
+
+    pub(super) fn graph_inspector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if self.inspector_open {
+            if ui.available_width() >= 800. {
+                egui::Panel::right("commit_inspector")
+                    .resizable(true)
+                    .default_size(300.)
+                    .size_range(260.0..=420.0)
+                    .frame(egui::Frame::new().fill(SURFACE()).inner_margin(20))
+                    .show(ui, |ui| {
+                        self.commit_inspector(ui, ctx);
+                    });
+            } else {
+                let mut open = true;
+                egui::Window::new("Commit inspector")
+                    .open(&mut open)
+                    .default_width(310.)
+                    .max_height((ctx.content_rect().height() - 120.).max(150.))
+                    .show(ctx, |ui| {
+                        self.commit_inspector(ui, ctx);
+                    });
+                if !open {
+                    self.inspector_open = false;
+                }
+            }
+        }
     }
 
     pub(super) fn view_commit(&mut self, id: &str, ctx: &egui::Context) {
@@ -481,17 +723,31 @@ impl Branchroom {
     }
 
     fn commit_inspector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if !self.preview_mode
+            && !self.selected_commit.is_empty()
+            && self.commit_files_for != self.selected_commit
+            && self.commit_files_requested != self.selected_commit
+            && self.receiver.is_none()
+        {
+            self.commit_files_requested = self.selected_commit.clone();
+            self.execute(Task::CommitFiles(self.selected_commit.clone()), ctx);
+        }
         egui::ScrollArea::vertical().id_salt("commit_details").show(ui,|ui| {
-            section(ui,"COMMIT DETAILS");
+            section(ui,"Commit details");
             ui.add_space(8.);
-            let commit=self.repo.as_ref().and_then(|r|r.branch_commits.iter().find(|c|c.id==self.selected_commit)).cloned();
-            let Some(commit)=commit else{ui.heading("Select a commit");subtitle(ui,"Choose a commit to review its changes and details.");return;};
+            let commit=self.repo.as_ref().and_then(|r|r.commits.iter().chain(r.branch_commits.iter()).find(|c|c.id==self.selected_commit)).cloned();
+            let Some(commit)=commit else{ui.heading("Commit details");if self.selected_commit.is_empty(){subtitle(ui,"Choose a commit to review its changes and details.");}else{ui.label(&self.selected_commit);subtitle(ui,"This commit is outside the loaded graph. Open its patch or load more history.");let id=self.selected_commit.clone();if ui.button("View patch").clicked(){self.view_commit(&id,ctx);}}return;};
             ui.add(egui::Label::new(RichText::new(&commit.subject).size(18.).strong()).wrap());
             ui.add_space(4.);
             ui.add(egui::Label::new(RichText::new(format!("{} · {}",commit.author,commit.date)).color(MUTED())).wrap());
             if !commit.refs.is_empty(){ui.add_space(8.);ui.horizontal_wrapped(|ui|{for name in commit.refs.split(", "){badge(ui,name,ACCENT());}});}
+            if let Some(Err(_))=&self.graph_context.data {subtitle(ui,"GitHub status is unavailable. Check the GitHub connection in Pull requests.");}
+            if let Some(Ok(data))=&self.graph_context.data {
+                if let Some(warning)=&data.identity_warning {ui.colored_label(WARNING(),warning);}
+                for pr in data.reviews.iter().filter(|p|p.commit==commit.id||self.graph_context.linked_to(&self.path(),&commit.id,p.number)){ui.hyperlink_to(format!("PR #{} - {} - {}",pr.number,pr.state,pr.ci),&pr.url);}
+            }
             ui.add_space(16.);
-            if primary(ui,"View patch").clicked(){self.view_commit(&commit.id,ctx);}
+            if ui.button("View patch").clicked(){self.view_commit(&commit.id,ctx);}
             if ui.button("Open this commit in IDE…").on_hover_text("Inspect or run this exact version in a separate directory, without changing your current checkout.").clicked(){self.begin_review(&commit.id,None);}
             ui.menu_button("Commit actions…",|ui| {
                 if ui.button("Find related pull requests").on_hover_text("Search GitHub for pull requests containing this commit; review or open their code in an IDE.").clicked(){self.page=Page::Github;self.pr_tab=0;self.pull_requests.clear();self.prs_loaded=false;self.execute(Task::CommitPullRequests(commit.id.clone()),ctx);ui.close();}
@@ -513,25 +769,26 @@ impl Branchroom {
                 } else if ui.button("Revert this commit…").on_hover_text("Add an inverse commit to the current branch. Preserves shared history; unlike reset, it does not remove commits.").clicked(){self.pending=Some(Pending{title:"Revert commit".into(),explanation:format!("Undo the changes introduced by {} on branch {} by creating a new commit. Later commits remain. Commit or stash working changes first. If conflicts occur, resolve or abort in Conflicts. Nothing is pushed.",short(&commit.id),self.repo.as_ref().unwrap().branch),task:Task::Revert{reference:commit.id.clone(),mainline:None}});ui.close();}
             });
             ui.add_space(12.);
-            section(ui,"CHANGED FILES");
+            section(ui,"Changed files");
             if self.commit_files_for!=commit.id {
-                if self.receiver.is_some(){subtitle(ui,"Loading changed files…");}
-                else if ui.button("Load changed files").clicked(){self.execute(Task::CommitFiles(commit.id.clone()),ctx);}
+                if self.preview_mode { subtitle(ui,"Changed files are available in a live repository"); }
+                else if self.receiver.is_some(){subtitle(ui,"Loading changed files…");}
+                else if ui.button("Retry loading changed files").clicked(){self.commit_files_requested=commit.id.clone();self.execute(Task::CommitFiles(commit.id.clone()),ctx);}
             } else if self.commit_files.is_empty(){subtitle(ui,"No changed files in this commit.");}
             else {
                 for file in self.commit_files.clone(){
-                    if ui.add(egui::Button::new(&file).truncate()).on_hover_text(&file).clicked(){
-                        self.detail_title=format!("{} · {}",short(&commit.id),file);
-                        let mut args=process::strings(&["show","--format=","--first-parent",&commit.id,"--"]);args.push(file);self.read("git",args,ctx);
+                    if ui.add(egui::Button::new(file.label()).selected(self.selected_path==file.path).truncate()).on_hover_text(&file.path).clicked(){
+                        self.detail_title=format!("{} · {}",short(&commit.id),file.path);
+                        let mut args=process::strings(&["show","--format=","--first-parent",&commit.id,"--"]);self.selected_path=file.path.clone();args.push(file.path);self.read("git",args,ctx);
                     }
                 }
             }
             ui.add_space(16.);
             egui::CollapsingHeader::new("Technical details").show(ui,|ui|{
-                section(ui,"COMMIT SHA");
+                section(ui,"Commit ID");
                 ui.add(egui::Label::new(RichText::new(&commit.id).monospace().size(12.)).wrap().selectable(true));
                 if ui.button("Copy full SHA").clicked(){ctx.copy_text(commit.id.clone());}
-                ui.add_space(8.);section(ui,"PARENTS");
+                ui.add_space(8.);section(ui,"Parents");
                 if commit.parents.is_empty(){subtitle(ui,"Root commit");}
                 for parent in &commit.parents {if ui.button(short(parent)).on_hover_text(parent).clicked(){self.selected_commit=parent.clone();}}
             });
@@ -587,4 +844,41 @@ fn text_at(ui: &egui::Ui, rect: egui::Rect, text: &str, size: f32, color: Color3
         galley,
         color,
     );
+}
+
+fn filter_terms(query: &str) -> Vec<String> {
+    let mut terms = vec![];
+    let mut current = String::new();
+    let mut quoted = false;
+    for c in query.chars() {
+        if c == '"' {
+            quoted = !quoted;
+        } else if c.is_whitespace() && !quoted {
+            if !current.is_empty() {
+                terms.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+    }
+    if !current.is_empty() {
+        terms.push(current);
+    }
+    terms
+}
+#[cfg(test)]
+mod filter_tests {
+    #[test]
+    fn quoted_file_paths_and_author_names_stay_single_filters() {
+        assert_eq!(
+            super::filter_terms(
+                "file:\"docs/Release notes.md\" author:\"Ada Lovelace\" after:2026-01-01"
+            ),
+            [
+                "file:docs/Release notes.md",
+                "author:Ada Lovelace",
+                "after:2026-01-01"
+            ]
+        );
+    }
 }

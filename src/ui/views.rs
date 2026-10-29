@@ -35,18 +35,18 @@ impl Branchroom {
             });
             return;
         }
-        section(ui, "UNMERGED FILES");
+        section(ui, "Files to resolve");
         for change in conflicts {
             ui.horizontal_wrapped(|ui|{
-                badge(ui,"Unmerged",DANGER());
+                badge(ui,"Needs resolution",DANGER());
                 if ui.selectable_label(self.conflict_path==change.path,&change.path).clicked(){
                     match std::fs::read_to_string(repo.root.join(&change.path)){
-                        Ok(content)=>{self.conflict_path=change.path.clone();self.conflict_original=content.clone();self.conflict_content=content;self.conflict_side=3;},
+                        Ok(content)=>{self.conflict_path=change.path.clone();self.conflict_original=content.clone();self.conflict_content=content;self.conflict_side=3;self.conflict_versions=Default::default();self.execute(Task::ConflictSides(change.path.clone()),ctx);},
                         Err(e)=>self.report(Err(format!("Cannot read this as text: {e}. Resolve binary or deleted files using your IDE or the file actions."))),
                     }
                 }
                 ui.menu_button("File actions",|ui|{
-                    if ui.button("Stage external resolution").clicked(){self.propose("Stage resolved file","Stage the file as it is. Verify that your external editor removed every conflict marker.",&["add","--", &change.path]);ui.close();}
+                    if ui.button("Include external resolution").clicked(){self.propose("Stage resolved file","Stage the file as it is. Verify that your external editor removed every conflict marker.",&["add","--", &change.path]);ui.close();}
                     if ui.button(RichText::new("Resolve as deleted").color(DANGER())).clicked(){self.propose("Resolve file as deleted","Remove this conflicted file from the index and working directory.",&["rm","--",&change.path]);ui.close();}
                     if ui.button("Open project in IDE").clicked(){let result=self.settings.open(&repo.root,self.settings.ide_for(&repo.root));self.report(result);ui.close();}
                 });
@@ -61,19 +61,31 @@ impl Branchroom {
             return;
         }
         surface().show(ui,|ui|{
-            ui.label(RichText::new(&self.conflict_path).strong());ui.add_space(8.);
+            ui.label(RichText::new(&self.conflict_path).strong());
+            subtitle(ui,"Review both versions and edit the result. The previous file is saved before a resolution is written");
             ui.horizontal_wrapped(|ui|{
-                for(index,label)in["Base","Current (ours)","Incoming (theirs)","Result editor"].iter().enumerate(){
-                    if ui.selectable_value(&mut self.conflict_side,index,*label).clicked()&&index<3{
-                        self.detail_title=label.to_string();self.read("git",process::strings(&["show",&format!(":{}:{}",index+1,self.conflict_path)]),ctx);
-                    }
-                }
-            });ui.add_space(12.);
-            if self.conflict_side==3{
-                egui::ScrollArea::both().id_salt("resolution_editor").max_height(360.).show(ui,|ui|{ui.add(egui::TextEdit::multiline(&mut self.conflict_content).hint_text("Resolved file contents").code_editor().desired_rows(14).desired_width(f32::INFINITY));});
-                ui.add_space(12.);
-                if ui.button("Save result & stage").clicked(){self.pending=Some(Pending{title:"Save conflict resolution".into(),explanation:format!("Write your edited result to {} and stage it. Conflict markers and externally changed files will be rejected.",self.conflict_path),task:Task::Resolve{path:self.conflict_path.clone(),content:self.conflict_content.clone(),original:self.conflict_original.clone()}});}
-            }else{egui::ScrollArea::both().id_salt("conflict_side_preview").max_height(360.).show(ui,|ui|{ui.add(egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true));});}
+                if ui.button("Use current version").clicked(){self.conflict_content=self.conflict_versions[1].clone();}
+                if ui.button("Use incoming version").clicked(){self.conflict_content=self.conflict_versions[2].clone();}
+                if ui.button("Reload both sides").clicked(){self.execute(Task::ConflictSides(self.conflict_path.clone()),ctx);}
+            });
+            if ui.available_width()>=850. {
+                ui.columns(3,|columns|{
+                    conflict_version(&mut columns[0],"Current branch",&self.conflict_versions[1]);
+                    conflict_version(&mut columns[1],"Incoming branch",&self.conflict_versions[2]);
+                    columns[2].label(RichText::new("Result").strong());
+                    egui::ScrollArea::both().id_salt("resolution_editor").max_height(300.).show(&mut columns[2],|ui|{ui.add(egui::TextEdit::multiline(&mut self.conflict_content).hint_text("Resolved file contents").code_editor().desired_rows(14).desired_width(f32::INFINITY));});
+                });
+            } else {
+                egui::CollapsingHeader::new("Current branch version").show(ui,|ui|conflict_version(ui,"Current branch",&self.conflict_versions[1]));
+                egui::CollapsingHeader::new("Incoming branch version").show(ui,|ui|conflict_version(ui,"Incoming branch",&self.conflict_versions[2]));
+                ui.label(RichText::new("Result").strong());
+                egui::ScrollArea::both().id_salt("resolution_editor").max_height(300.).show(ui,|ui|{ui.add(egui::TextEdit::multiline(&mut self.conflict_content).hint_text("Resolved file contents").code_editor().desired_rows(12).desired_width(f32::INFINITY));});
+            }
+            if ui.button("Save result and include file").clicked(){self.pending=Some(Pending{title:"Save conflict resolution".into(),explanation:format!("Save a recovery copy, write your edited result to {} and include it in the next commit. Conflict markers and externally changed files will be rejected.",self.conflict_path),task:Task::Resolve{path:self.conflict_path.clone(),content:self.conflict_content.clone(),original:self.conflict_original.clone()}});}
+            egui::CollapsingHeader::new("Advanced: inspect one version").show(ui,|ui|{
+                ui.horizontal_wrapped(|ui|{for(index,label)in["Branched off here","Current branch","Incoming branch"].iter().enumerate(){if ui.selectable_value(&mut self.conflict_side,index,*label).clicked(){self.detail_title=label.to_string();self.read("git",process::strings(&["show",&format!(":{}:{}",index+1,self.conflict_path)]),ctx);}}});
+                conflict_version(ui,"Selected version",&self.detail);
+            });
         });
         ui.add_space(10.);
         subtitle(
@@ -399,7 +411,7 @@ impl Branchroom {
             ui.label(RichText::new("Run a command").size(18.).strong());ui.add_space(12.);
             ui.horizontal(|ui|{ui.label("Executable");egui::ComboBox::from_id_salt("command_program").selected_text(&self.command_program).show_ui(ui,|ui|{ui.selectable_value(&mut self.command_program,"git".into(),"git");ui.selectable_value(&mut self.command_program,"gh".into(),"gh");}).response.on_hover_text("Command executable");});
             ui.label("Arguments as a JSON array");ui.add(egui::TextEdit::multiline(&mut self.command_json).hint_text("Command arguments as a JSON array").code_editor().desired_rows(3).desired_width(f32::INFINITY));subtitle(ui,"Each string is one argument. Shell expressions are not expanded. Interactive commands are unsupported.");ui.add_space(14.);
-            if primary(ui,"Review command").clicked(){match serde_json::from_str::<Vec<String>>(&self.command_json){Ok(args)if !args.is_empty()=>self.pending=Some(Pending{title:"Run command".into(),explanation:"This command runs with your permissions and can change local files, configuration, or remote services. Review every argument.".into(),task:Task::Command{program:self.command_program.clone(),args,refresh:true}}),_=>self.report(Err("Enter a nonempty JSON array of argument strings, for example [\"status\", \"--short\"].".into()))}}
+            if primary(ui,"Review command").clicked(){match serde_json::from_str::<Vec<String>>(&self.command_json){Ok(args)if !args.is_empty()=>self.pending=Some(Pending{title:"Run command".into(),explanation:"This command runs with your permissions and can change local files, configuration, or remote services. Review every argument.".into(),task:if self.command_program=="git"{Task::RawGit(args)}else{Task::Command{program:self.command_program.clone(),args,refresh:true}}}),_=>self.report(Err("Enter a nonempty JSON array of argument strings, for example [\"status\", \"--short\"].".into()))}}
             ui.add_space(8.);egui::CollapsingHeader::new("Argument examples").show(ui,|ui|{ui.monospace("[\"log\", \"--oneline\", \"--graph\", \"--all\"]\n[\"bundle\", \"create\", \"backup.bundle\", \"--all\"]\n[\"config\", \"user.email\", \"you@example.com\"]\n[\"lfs\", \"status\"]");});
         });
         if !self.detail.is_empty() {
@@ -441,7 +453,7 @@ impl Branchroom {
             );
             subtitle(
                 ui,
-                "Fetch remains explicit. Automatic refresh only reads local files, branches and tags.",
+                "Checks local changes every 30 seconds and fetches remote updates every 5 minutes while idle.",
             );
             if ui.button("Reset interface scale to 100%").clicked() {
                 ui.ctx().set_zoom_factor(1.);
@@ -555,4 +567,14 @@ impl Branchroom {
             .selectable(true),
         );
     }
+}
+
+fn conflict_version(ui: &mut egui::Ui, label: &str, text: &str) {
+    ui.label(RichText::new(label).strong());
+    egui::ScrollArea::both()
+        .id_salt(("conflict_version", label))
+        .max_height(300.)
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(RichText::new(text).monospace()).selectable(true));
+        });
 }

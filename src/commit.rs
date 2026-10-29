@@ -39,7 +39,7 @@ pub fn prepare(root: &Path, message: &str, amend: bool) -> Result<Plan> {
     Ok(Plan {
         head: git::resolve(root, "HEAD").ok(),
         tree: git(root, &["write-tree"])?.trim().into(),
-        branch: git(root, &["symbolic-ref", "--short", "HEAD"])
+        branch: git::current_branch(root)
             .unwrap_or_else(|_| "Detached HEAD".into())
             .trim()
             .into(),
@@ -53,7 +53,11 @@ fn process_guard(root: &Path) -> Result<()> {
 }
 pub fn execute(root: &Path, plan: &Plan) -> Result<String> {
     crate::safety::ensure_writable(root)?;
-    if git::resolve(root, "HEAD").ok() != plan.head
+    if git::current_branch(root)
+        .unwrap_or_else(|_| "Detached HEAD".into())
+        .trim()
+        != plan.branch
+        || git::resolve(root, "HEAD").ok() != plan.head
         || git(root, &["write-tree"])?.trim() != plan.tree
     {
         return Err("The branch or staged files changed after the commit preview. Review the staged changes and commit again.".into());

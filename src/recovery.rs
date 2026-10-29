@@ -11,6 +11,8 @@ pub struct Entry {
     pub root: PathBuf,
     pub path: String,
     pub existed: bool,
+    #[serde(default)]
+    pub head: Option<String>,
 }
 pub fn directory() -> PathBuf {
     crate::settings::settings_path().with_file_name("discard-recovery")
@@ -74,7 +76,7 @@ pub fn discard(root: &Path, path: &str) -> Result<String> {
     ))
 }
 
-fn backup(root: &Path, path: &str) -> Result<Entry> {
+pub(crate) fn backup(root: &Path, path: &str) -> Result<Entry> {
     let target = checked_path(root, path)?;
     if target.is_dir() {
         return Err("Choose a working file, not a directory.".into());
@@ -91,6 +93,7 @@ fn backup(root: &Path, path: &str) -> Result<Entry> {
         root: fs::canonicalize(root).map_err(|e| e.to_string())?,
         path: path.into(),
         existed,
+        head: crate::git::resolve(root, "HEAD").ok(),
     };
     crate::storage::write_atomic(
         &folder.join("entry.json"),
@@ -177,4 +180,21 @@ pub fn ignore(root: &Path, path: &str) -> Result<String> {
     Ok(format!(
         "Added {pattern} to .gitignore. Already tracked files remain tracked."
     ))
+}
+
+pub fn preview(root: &Path, id: &str) -> Result<String> {
+    let entry = entries(root)
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or("The saved file is no longer available")?;
+    if !entry.existed {
+        return Ok("The file did not exist at this point".into());
+    }
+    let bytes = fs::read(directory().join(&entry.id).join("content")).map_err(|e| e.to_string())?;
+    if bytes.len() > 1_000_000 {
+        return Ok("This saved file is too large for an inline preview. Recover it to inspect the complete content".into());
+    }
+    Ok(String::from_utf8(bytes).unwrap_or_else(|_| {
+        "This saved file contains binary data. Recover it to inspect the content".into()
+    }))
 }

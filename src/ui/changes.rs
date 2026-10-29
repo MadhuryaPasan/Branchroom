@@ -46,10 +46,9 @@ impl Branchroom {
         self.selected_hunks.clear();
         self.selected_lines.clear();
     }
-    pub(super) fn queue_commit(&mut self, ctx: &egui::Context) {
+    pub(super) fn commit_text(&self) -> Result<String> {
         if self.commit_message.trim().is_empty() {
-            self.report(Err("Enter a commit summary before committing.".into()));
-            return;
+            return Err("Enter a commit summary before committing".into());
         }
         let mut message = self.commit_message.trim().to_owned();
         if !self.commit_description.trim().is_empty() {
@@ -60,22 +59,25 @@ impl Branchroom {
             for author in self.coauthor.lines().filter(|s| !s.trim().is_empty()) {
                 let author = author.trim().trim_start_matches("Co-authored-by: ");
                 if !author.contains('<') || !author.contains('@') || !author.ends_with('>') {
-                    self.report(Err(
-                        "Enter each co-author as Name <email@example.com>.".into()
-                    ));
-                    return;
+                    return Err("Enter each co-author as Name <email@example.com>.".into());
                 }
                 message.push_str("\n\nCo-authored-by: ");
                 message.push_str(author);
             }
         }
-        self.execute(
-            Task::PrepareCommit {
-                message,
-                amend: self.amend,
-            },
-            ctx,
-        );
+        Ok(message)
+    }
+    pub(super) fn queue_commit(&mut self, ctx: &egui::Context) {
+        match self.commit_text() {
+            Ok(message) => self.execute(
+                Task::PrepareCommit {
+                    message,
+                    amend: self.amend,
+                },
+                ctx,
+            ),
+            Err(error) => self.report(Err(error)),
+        }
     }
 
     pub(super) fn changes(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {

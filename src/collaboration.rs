@@ -264,7 +264,7 @@ pub fn switch_branch(root: &Path, branch: &str, stash: bool) -> Result<String> {
 
 pub fn merge(root: &Path, target: &str, reference: &str) -> Result<String> {
     require_idle(root)?;
-    let current = run(root, &["symbolic-ref", "--short", "HEAD"])?;
+    let current = git::current_branch(root)?;
     if current.trim() != target {
         return Err("The checked-out branch changed. Review the destination and try again.".into());
     }
@@ -272,4 +272,29 @@ pub fn merge(root: &Path, target: &str, reference: &str) -> Result<String> {
     run(root, &["merge", "--no-edit", &id]).map_err(|e| {
         format!("{e}\nResolve and Continue, or Abort, in Conflicts. Nothing was pushed.")
     })
+}
+
+/// Preserve the deleted tip in the same recovery store used by history rewrites.
+pub fn delete_merged_branch(root: &Path, name: &str, expected: &str) -> Result<String> {
+    crate::safety::ensure_writable(root)?;
+    require_idle(root)?;
+    run(root, &["check-ref-format", &format!("refs/heads/{name}")])?;
+    let reference = format!("refs/heads/{name}");
+    let actual = git::resolve(root, &reference)?;
+    if actual != expected {
+        return Err("The branch changed since review. Refresh and try again.".into());
+    }
+    let current = run(root, &["symbolic-ref", "HEAD"])?;
+    if current.trim() == reference {
+        return Err("Switch to another branch before deleting this one.".into());
+    }
+    run(root, &["merge-base", "--is-ancestor", &actual, "HEAD"]).map_err(|_| {
+        "This branch has commits missing from the current branch. Merge or keep it.".to_owned()
+    })?;
+    let checkpoint = format!("refs/branchroom/recovery/{}", snapshot::unique_id());
+    run(root, &["update-ref", &checkpoint, &actual, ""])?;
+    run(root, &["branch", "-d", "--", name])?;
+    Ok(format!(
+        "Deleted {name}. Its tip is saved in Time Machine: {checkpoint}"
+    ))
 }

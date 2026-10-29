@@ -1512,22 +1512,23 @@ fn remote_head_symbolic_reference_is_not_shown_as_a_branch() {
     f.write("readme.txt", "example\n");
     f.commit("Initial commit");
     let head = git::resolve(&f.0, "HEAD").unwrap();
-    git(&f.0, &["update-ref", "refs/remotes/origin/main", &head]).unwrap();
+    git(&f.0, &["update-ref", "refs/remotes/origin/trunk", &head]).unwrap();
     git(
         &f.0,
         &[
             "symbolic-ref",
             "refs/remotes/origin/HEAD",
-            "refs/remotes/origin/main",
+            "refs/remotes/origin/trunk",
         ],
     )
     .unwrap();
     let state = git::load(&f.0, "main", 50).unwrap();
+    assert_eq!(state.default_branch.as_deref(), Some("trunk"));
     assert!(
         state
             .branches
             .iter()
-            .any(|branch| branch.name == "origin/main")
+            .any(|branch| branch.name == "origin/trunk")
     );
     assert!(
         !state.branches.iter().any(
@@ -1579,5 +1580,884 @@ fn sync_counts_use_the_tracked_remote_not_the_comparison_branch() {
     assert_eq!(
         git::load(&f.0, "main", 30).unwrap().sync_counts,
         Some((1, 1))
+    );
+}
+
+#[test]
+fn deleting_a_merged_branch_keeps_a_recovery_checkpoint_and_refuses_stale_tips() {
+    let f = Fixture::new();
+    f.write("notes.txt", "first");
+    f.commit("First");
+    git(&f.0, &["branch", "finished"]).unwrap();
+    let tip = git::resolve(&f.0, "finished").unwrap();
+    assert!(
+        branchroom::collaboration::delete_merged_branch(&f.0, "finished", &"0".repeat(40)).is_err()
+    );
+    assert!(git::resolve(&f.0, "finished").is_ok());
+    branchroom::collaboration::delete_merged_branch(&f.0, "finished", &tip).unwrap();
+    assert!(git::resolve(&f.0, "finished").is_err());
+    let state = git::load(&f.0, "main", 100).unwrap();
+    assert!(state.recovery_heads.iter().any(|saved| saved.id == tip));
+    assert!(branchroom::collaboration::delete_merged_branch(&f.0, "main", &tip).is_err());
+}
+
+#[test]
+fn branch_cleanup_refuses_unmerged_commits_without_creating_a_checkpoint() {
+    let f = Fixture::new();
+    f.write("notes.txt", "base");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "unfinished"]).unwrap();
+    f.write("notes.txt", "unfinished");
+    f.commit("Unfinished");
+    let tip = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["switch", "main"]).unwrap();
+    assert!(branchroom::collaboration::delete_merged_branch(&f.0, "unfinished", &tip).is_err());
+    assert_eq!(git::resolve(&f.0, "unfinished").unwrap(), tip);
+    assert!(
+        git::load(&f.0, "main", 100)
+            .unwrap()
+            .recovery_heads
+            .is_empty()
+    );
+}
+
+#[test]
+fn graph_merge_forecast_lists_conflicts_without_changing_checkout_or_index() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("same.txt", "base\n");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("same.txt", "incoming\n");
+    f.commit("Incoming");
+    git(&f.0, &["switch", "main"]).unwrap();
+    f.write("same.txt", "current\n");
+    f.commit("Current");
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let index = git(&f.0, &["write-tree"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Merge {
+            source: "incoming".into(),
+            target: "main".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(review.conflicts, vec!["same.txt"]);
+    assert!(review.blocked.is_none());
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
+    assert_eq!(git(&f.0, &["write-tree"]).unwrap(), index);
+    assert_eq!(
+        fs::read_to_string(f.0.join("same.txt")).unwrap(),
+        "current\n"
+    );
+    assert!(git::load(&f.0, "main", 100).unwrap().snapshots.is_empty());
+}
+#[test]
+fn reviewed_graph_merge_snapshots_first_and_refuses_a_changed_source() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("base.txt", "base");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("incoming.txt", "new");
+    f.commit("Incoming");
+    git(&f.0, &["switch", "main"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Merge {
+            source: "incoming".into(),
+            target: "main".into(),
+        },
+    )
+    .unwrap();
+    assert!(review.conflicts.is_empty());
+    assert!(review.introduced > 0);
+    let old = git::resolve(&f.0, "HEAD").unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(fs::read_to_string(f.0.join("incoming.txt")).unwrap(), "new");
+    let state = git::load(&f.0, "main", 100).unwrap();
+    assert!(!state.snapshots.is_empty());
+    assert!(state.recovery_heads.iter().any(|s| s.id == old));
+    assert!(operation::apply(&f.0, &review).is_err());
+}
+#[test]
+fn graph_commit_and_fixup_keep_unstaged_work_and_checkpoint_the_index() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("base.txt", "base");
+    f.commit("Base");
+    f.write("notes.txt", "included");
+    git(&f.0, &["add", "notes.txt"]).unwrap();
+    f.write("notes.txt", "included plus unstaged");
+    let review = operation::preview(
+        &f.0,
+        Kind::Commit {
+            message: "Included change".into(),
+        },
+    )
+    .unwrap();
+    assert!(review.conflicts.is_empty());
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git(&f.0, &["show", "HEAD:notes.txt"]).unwrap(), "included");
+    assert_eq!(
+        fs::read_to_string(f.0.join("notes.txt")).unwrap(),
+        "included plus unstaged"
+    );
+    git(&f.0, &["add", "notes.txt"]).unwrap();
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let amend = operation::preview(
+        &f.0,
+        Kind::Amend {
+            commit: head,
+            message: "Updated change".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &amend).unwrap();
+    assert_eq!(
+        git(&f.0, &["show", "HEAD:notes.txt"]).unwrap(),
+        "included plus unstaged"
+    );
+    assert!(git::load(&f.0, "main", 100).unwrap().recovery_heads.len() >= 4);
+}
+#[test]
+fn graph_rewrite_forecast_preserves_final_tree_and_refuses_published_commits() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    f.write("a.txt", "a");
+    f.commit("A");
+    let a = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("b.txt", "b");
+    f.commit("B");
+    let b = git::resolve(&f.0, "HEAD").unwrap();
+    let tree = git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Squash {
+            source: b,
+            target: a.clone(),
+            message: "A and B".into(),
+        },
+    )
+    .unwrap();
+    assert!(review.blocked.is_none());
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap(), tree);
+    git(&f.0, &["update-ref", "refs/remotes/origin/main", "HEAD"]).unwrap();
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    assert!(
+        operation::preview(
+            &f.0,
+            Kind::Amend {
+                commit: head,
+                message: "Rewrite shared".into()
+            }
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn graph_fixup_of_an_earlier_commit_replays_later_commits_without_touching_working_files() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    f.write("a.txt", "a");
+    f.commit("A");
+    let a = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("b.txt", "b");
+    f.commit("B");
+    f.write("a.txt", "a fixed");
+    git(&f.0, &["add", "a.txt"]).unwrap();
+    f.write("b.txt", "b plus unstaged");
+    let staged = git(&f.0, &["write-tree"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Amend {
+            commit: a,
+            message: "Fix A".into(),
+        },
+    )
+    .unwrap();
+    assert!(review.blocked.is_none());
+    assert!(review.conflicts.is_empty());
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap(), staged);
+    assert_eq!(
+        fs::read_to_string(f.0.join("b.txt")).unwrap(),
+        "b plus unstaged"
+    );
+    assert_eq!(
+        git(&f.0, &["log", "-1", "--format=%s"]).unwrap().trim(),
+        "B"
+    );
+}
+#[test]
+fn graph_preview_refuses_a_changed_source_or_newly_published_amend() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("a.txt", "a");
+    f.commit("A");
+    git(&f.0, &["switch", "main"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::Merge {
+            source: "incoming".into(),
+            target: "main".into(),
+        },
+    )
+    .unwrap();
+    git(&f.0, &["update-ref", "refs/heads/incoming", "HEAD"]).unwrap();
+    assert!(operation::apply(&f.0, &review).is_err());
+    assert!(git::load(&f.0, "main", 100).unwrap().snapshots.is_empty());
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let amend = operation::preview(
+        &f.0,
+        Kind::Amend {
+            commit: head,
+            message: "Changed root".into(),
+        },
+    )
+    .unwrap();
+    git(&f.0, &["update-ref", "refs/remotes/origin/main", "HEAD"]).unwrap();
+    assert!(operation::apply(&f.0, &amend).is_err());
+}
+#[test]
+fn graph_move_to_new_branch_preserves_dirty_work_and_keeps_main_at_remote_tip() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    let base = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["update-ref", "refs/remotes/origin/main", &base]).unwrap();
+    git(&f.0, &["config", "branch.main.remote", "origin"]).unwrap();
+    git(&f.0, &["config", "branch.main.merge", "refs/heads/main"]).unwrap();
+    git(
+        &f.0,
+        &[
+            "config",
+            "remote.origin.url",
+            "https://example.invalid/repo",
+        ],
+    )
+    .unwrap();
+    git(
+        &f.0,
+        &[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ],
+    )
+    .unwrap();
+    f.write("a.txt", "a");
+    f.commit("A");
+    let old = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("a.txt", "working edit");
+    let review = operation::preview(
+        &f.0,
+        Kind::MoveToBranch {
+            name: "feature/right-place".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::resolve(&f.0, "main").unwrap(), base);
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), old);
+    assert_eq!(
+        git(&f.0, &["symbolic-ref", "--short", "HEAD"])
+            .unwrap()
+            .trim(),
+        "feature/right-place"
+    );
+    assert_eq!(
+        fs::read_to_string(f.0.join("a.txt")).unwrap(),
+        "working edit"
+    );
+}
+
+#[test]
+fn graph_root_undo_keeps_files_and_saves_the_original_commit() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("first.txt", "first");
+    f.commit("First");
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let review = operation::preview(&f.0, Kind::Undo).unwrap();
+    assert!(review.after.is_empty());
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
+    operation::apply(&f.0, &review).unwrap();
+    assert!(git::resolve(&f.0, "HEAD").is_err());
+    assert_eq!(fs::read_to_string(f.0.join("first.txt")).unwrap(), "first");
+    assert!(git(&f.0, &["ls-files"]).unwrap().is_empty());
+    assert!(
+        git::load(&f.0, "HEAD", 100)
+            .unwrap()
+            .recovery_heads
+            .iter()
+            .any(|saved| saved.id == head)
+    );
+}
+#[test]
+fn graph_reset_returns_removed_changes_to_the_working_directory() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    let root = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("next.txt", "next");
+    f.commit("Next");
+    let review = operation::preview(
+        &f.0,
+        Kind::Reset {
+            commit: root.clone(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), root);
+    assert_eq!(fs::read_to_string(f.0.join("next.txt")).unwrap(), "next");
+    assert!(
+        git(&f.0, &["status", "--porcelain"])
+            .unwrap()
+            .contains("next.txt")
+    );
+}
+#[test]
+fn graph_cherry_pick_forecast_and_apply_preserve_the_source_branch() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("new.txt", "incoming");
+    f.commit("Incoming");
+    let id = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["switch", "main"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::CherryPick {
+            commit: id.clone(),
+            target: "main".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(review.introduced, 1);
+    assert!(!f.0.join("new.txt").exists());
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::resolve(&f.0, "incoming").unwrap(), id);
+    assert_eq!(fs::read_to_string(f.0.join("new.txt")).unwrap(), "incoming");
+}
+#[test]
+fn graph_reorder_and_range_squash_keep_every_file() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    f.write("a.txt", "a");
+    f.commit("A");
+    let a = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("b.txt", "b");
+    f.commit("B");
+    let b = git::resolve(&f.0, "HEAD").unwrap();
+    let tree = git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap();
+    let review = operation::preview(&f.0, Kind::Reorder { order: vec![b, a] }).unwrap();
+    assert!(review.blocked.is_none());
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap(), tree);
+    assert_eq!(
+        git(&f.0, &["log", "-1", "--format=%s"]).unwrap().trim(),
+        "A"
+    );
+    f.write("c.txt", "c");
+    f.commit("C");
+    let tree = git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap();
+    let review = operation::preview(
+        &f.0,
+        Kind::SquashRange {
+            count: 3,
+            message: "Combined local work".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git(&f.0, &["rev-parse", "HEAD^{tree}"]).unwrap(), tree);
+    assert_eq!(
+        git(&f.0, &["rev-list", "--count", "HEAD"]).unwrap().trim(),
+        "2"
+    );
+}
+#[test]
+fn graph_forecast_refuses_custom_merge_drivers_instead_of_running_them() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["branch", "incoming"]).unwrap();
+    git(&f.0, &["config", "merge.custom.driver", "exit 99"]).unwrap();
+    let error = operation::preview(
+        &f.0,
+        Kind::Merge {
+            source: "incoming".into(),
+            target: "main".into(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("custom merge driver"));
+    assert!(git::load(&f.0, "main", 100).unwrap().snapshots.is_empty());
+}
+#[test]
+fn saving_conflict_resolution_keeps_the_previous_marker_file_in_recovery() {
+    let f = Fixture::new();
+    f.write("shared.txt", "base\n");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("shared.txt", "incoming\n");
+    f.commit("Incoming");
+    git(&f.0, &["switch", "main"]).unwrap();
+    f.write("shared.txt", "current\n");
+    f.commit("Current");
+    assert!(git(&f.0, &["merge", "--no-edit", "incoming"]).is_err());
+    let original = fs::read_to_string(f.0.join("shared.txt")).unwrap();
+    branchroom::conflict::save(&f.0, "shared.txt", "resolved\n", &original).unwrap();
+    let entries = branchroom::recovery::entries(&f.0);
+    assert_eq!(entries.len(), 1);
+    let backup = branchroom::recovery::directory()
+        .join(&entries[0].id)
+        .join("content");
+    assert_eq!(fs::read_to_string(backup).unwrap(), original);
+    assert_eq!(git(&f.0, &["show", ":shared.txt"]).unwrap(), "resolved\n");
+}
+#[test]
+fn prepared_commit_refuses_a_branch_switch_even_when_the_tip_is_the_same() {
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    f.write("next.txt", "next");
+    git(&f.0, &["add", "next.txt"]).unwrap();
+    let plan = branchroom::commit::prepare(&f.0, "Next", false).unwrap();
+    git(&f.0, &["switch", "-c", "other"]).unwrap();
+    assert!(branchroom::commit::execute(&f.0, &plan).is_err());
+    assert_eq!(
+        git(&f.0, &["log", "-1", "--format=%s"]).unwrap().trim(),
+        "Root"
+    );
+}
+
+#[test]
+fn graph_actions_bind_literal_branch_names_even_when_tags_and_prefixes_collide() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    let base = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["tag", "main"]).unwrap();
+    git(&f.0, &["branch", "heads/main", "HEAD"]).unwrap();
+    f.write("a.txt", "a");
+    f.commit("A");
+    let a = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("b.txt", "b");
+    f.commit("B");
+    let b = git::resolve(&f.0, "HEAD").unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "main");
+    assert_eq!(git::load(&f.0, "main", 100).unwrap().branch, "main");
+    let review = operation::preview(
+        &f.0,
+        Kind::Squash {
+            source: b,
+            target: a,
+            message: "A and B".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::resolve(&f.0, "refs/heads/heads/main").unwrap(), base);
+    let main = git::resolve(&f.0, "refs/heads/main").unwrap();
+    assert_ne!(main, base);
+    assert_eq!(
+        git(&f.0, &["log", "-1", "--format=%ce"]).unwrap().trim(),
+        "tests@example.invalid"
+    );
+    let review = operation::preview(
+        &f.0,
+        Kind::Merge {
+            source: "refs/heads/main".into(),
+            target: "refs/heads/heads/main".into(),
+        },
+    )
+    .unwrap();
+    operation::apply(&f.0, &review).unwrap();
+    assert_eq!(git::current_branch(&f.0).unwrap(), "heads/main");
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), main);
+    assert_eq!(git::resolve(&f.0, "refs/tags/main").unwrap(), base);
+}
+#[test]
+fn advanced_resolution_delete_preserves_conflicted_file_before_removing_it() {
+    let f = Fixture::new();
+    f.write("shared.txt", "base\n");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "incoming"]).unwrap();
+    f.write("shared.txt", "incoming\n");
+    f.commit("Incoming");
+    git(&f.0, &["switch", "main"]).unwrap();
+    f.write("shared.txt", "current\n");
+    f.commit("Current");
+    assert!(git(&f.0, &["merge", "--no-edit", "incoming"]).is_err());
+    let original = fs::read_to_string(f.0.join("shared.txt")).unwrap();
+    branchroom::operation::advanced_safety(
+        &f.0,
+        &branchroom::process::strings(&["rm", "--", "shared.txt"]),
+    )
+    .unwrap();
+    git(&f.0, &["rm", "--", "shared.txt"]).unwrap();
+    assert!(!f.0.join("shared.txt").exists());
+    let entries = branchroom::recovery::entries(&f.0);
+    assert!(entries.iter().any(|e| {
+        fs::read_to_string(
+            branchroom::recovery::directory()
+                .join(&e.id)
+                .join("content"),
+        )
+        .ok()
+        .as_deref()
+            == Some(original.as_str())
+    }));
+}
+#[test]
+fn signing_policy_requires_exact_advanced_rewrite_instead_of_importing_unsigned_commits() {
+    use branchroom::operation::{self, Kind};
+    let f = Fixture::new();
+    f.write("root.txt", "root");
+    f.commit("Root");
+    f.write("a.txt", "a");
+    f.commit("A");
+    let a = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("b.txt", "b");
+    f.commit("B");
+    let b = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["config", "commit.gpgsign", "true"]).unwrap();
+    assert!(
+        operation::preview(
+            &f.0,
+            Kind::Squash {
+                source: b,
+                target: a,
+                message: "Combined".into()
+            }
+        )
+        .unwrap_err()
+        .contains("signing")
+    );
+}
+
+#[test]
+fn timeline_undo_redo_restores_head_index_working_and_untracked_files() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "original\n");
+    f.commit("Root");
+    let original = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("a.txt", "included\n");
+    git(&f.0, &["add", "a.txt"]).unwrap();
+    f.write("a.txt", "working\n");
+    f.write("new.txt", "untracked\n");
+    let action = timeline::begin(&f.0, "Commit included changes").unwrap();
+    let id = action.id.clone();
+    git(&f.0, &["commit", "-m", "Included"]).unwrap();
+    let committed = git::resolve(&f.0, "HEAD").unwrap();
+    timeline::finish(&f.0, action, true).unwrap();
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), original);
+    assert_eq!(git(&f.0, &["show", ":a.txt"]).unwrap(), "included\n");
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "working\n");
+    assert_eq!(
+        fs::read_to_string(f.0.join("new.txt")).unwrap(),
+        "untracked\n"
+    );
+    timeline::undo_redo(&f.0, true, &id).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), committed);
+    assert_eq!(git(&f.0, &["show", ":a.txt"]).unwrap(), "included\n");
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "working\n");
+}
+#[test]
+fn timeline_refuses_external_edits_and_retires_redo_after_a_new_action() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "one");
+    f.commit("Root");
+    let action = timeline::begin(&f.0, "Edit file").unwrap();
+    let id = action.id.clone();
+    f.write("a.txt", "two");
+    timeline::finish(&f.0, action, true).unwrap();
+    f.write("a.txt", "external");
+    assert!(
+        timeline::undo_redo(&f.0, false, &id)
+            .unwrap_err()
+            .contains("changed after")
+    );
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "external");
+    f.write("a.txt", "two");
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    let next = timeline::begin(&f.0, "Another edit").unwrap();
+    f.write("a.txt", "three");
+    timeline::finish(&f.0, next, true).unwrap();
+    assert!(timeline::candidate(&f.0, true).is_err());
+}
+#[test]
+fn timeline_recovers_deleted_branch_and_non_top_shelved_work() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["branch", "saved"]).unwrap();
+    for label in ["first", "second", "third"] {
+        f.write("a.txt", label);
+        git(&f.0, &["stash", "push", "-m", label]).unwrap();
+    }
+    let shelves = git(&f.0, &["stash", "list", "--format=%H%x00%gs"]).unwrap();
+    let action = timeline::begin(&f.0, "Delete shelved work").unwrap();
+    let id = action.id.clone();
+    git(&f.0, &["stash", "drop", "stash@{1}"]).unwrap();
+    git(&f.0, &["branch", "-D", "saved"]).unwrap();
+    timeline::finish(&f.0, action, true).unwrap();
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(
+        git(&f.0, &["stash", "list", "--format=%H%x00%gs"]).unwrap(),
+        shelves
+    );
+    assert!(git::resolve(&f.0, "refs/heads/saved").is_ok());
+    timeline::undo_redo(&f.0, true, &id).unwrap();
+    assert_eq!(
+        git(&f.0, &["stash", "list", "--format=%H"])
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+    assert!(git::resolve(&f.0, "refs/heads/saved").is_err());
+}
+#[test]
+fn timeline_restore_preview_is_stale_safe_and_restore_itself_can_be_undone() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "one");
+    f.commit("First");
+    let first = git::resolve(&f.0, "HEAD").unwrap();
+    f.write("a.txt", "two");
+    f.commit("Second");
+    let second = git::resolve(&f.0, "HEAD").unwrap();
+    let item = timeline::items(&f.0, 100)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.kind == "Commit" && e.target == first)
+        .unwrap();
+    let plan = timeline::plan_restore(&f.0, &item, false).unwrap();
+    f.write("new.txt", "newer");
+    assert!(timeline::apply_restore(&f.0, &plan).is_err());
+    fs::remove_file(f.0.join("new.txt")).unwrap();
+    let action = timeline::begin(&f.0, "Restore first version").unwrap();
+    let id = action.id.clone();
+    timeline::apply_restore(&f.0, &plan).unwrap();
+    timeline::finish(&f.0, action, true).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), first);
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "one");
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), second);
+}
+#[test]
+fn timeline_unborn_commit_undo_and_redo_keeps_files() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "first");
+    git(&f.0, &["add", "a.txt"]).unwrap();
+    let action = timeline::begin(&f.0, "First commit").unwrap();
+    let id = action.id.clone();
+    git(&f.0, &["commit", "-m", "First"]).unwrap();
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    timeline::finish(&f.0, action, true).unwrap();
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert!(git::resolve(&f.0, "HEAD").is_err());
+    assert_eq!(git(&f.0, &["show", ":a.txt"]).unwrap(), "first");
+    timeline::undo_redo(&f.0, true, &id).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
+}
+#[test]
+fn timeline_merges_old_safety_points_discards_shelves_and_commits_without_losing_deleted_data() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "first");
+    f.commit("First");
+    let saved = snapshot::create(&f.0, "Manual version").unwrap();
+    let reference = saved.lines().find(|l| l.starts_with("refs/")).unwrap();
+    snapshot::remove(&f.0, reference).unwrap();
+    f.write("a.txt", "discard");
+    branchroom::recovery::discard(&f.0, "a.txt").unwrap();
+    f.write("a.txt", "shelved");
+    git(&f.0, &["stash", "push", "-m", "Later"]).unwrap();
+    let items = timeline::items(&f.0, 100).unwrap();
+    for kind in [
+        "Commit",
+        "Deleted safety point",
+        "Discarded file",
+        "Shelved work",
+    ] {
+        assert!(items.iter().any(|i| i.kind == kind), "Missing {kind}");
+    }
+}
+
+#[test]
+fn timeline_restore_refuses_ignored_file_collisions_and_keeps_the_original_index() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("secret.txt", "tracked version");
+    f.commit("First");
+    let first = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["rm", "secret.txt"]).unwrap();
+    f.write(".gitignore", "secret.txt\n");
+    f.commit("Ignore local secret");
+    f.write("secret.txt", "private local value");
+    let item = timeline::Item {
+        target: first,
+        kind: "Commit".into(),
+        label: "First".into(),
+        ..Default::default()
+    };
+    let plan = timeline::plan_restore(&f.0, &item, false).unwrap();
+    let head = git::resolve(&f.0, "HEAD").unwrap();
+    let index = git(&f.0, &["write-tree"]).unwrap();
+    assert!(timeline::apply_restore(&f.0, &plan).is_err());
+    assert_eq!(
+        fs::read_to_string(f.0.join("secret.txt")).unwrap(),
+        "private local value"
+    );
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), head);
+    assert_eq!(git(&f.0, &["write-tree"]).unwrap(), index);
+}
+#[test]
+fn timeline_can_undo_and_redo_multiple_actions_and_preserve_new_file_removal() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let mut ids = vec![];
+    for (name, text) in [("first.txt", "one"), ("second.txt", "two")] {
+        let entry = timeline::begin(&f.0, name).unwrap();
+        ids.push(entry.id.clone());
+        f.write(name, text);
+        timeline::finish(&f.0, entry, true).unwrap();
+    }
+    timeline::undo_redo(&f.0, false, &ids[1]).unwrap();
+    assert!(!f.0.join("second.txt").exists());
+    timeline::undo_redo(&f.0, false, &ids[0]).unwrap();
+    assert!(!f.0.join("first.txt").exists());
+    timeline::undo_redo(&f.0, true, &ids[0]).unwrap();
+    timeline::undo_redo(&f.0, true, &ids[1]).unwrap();
+    assert_eq!(fs::read_to_string(f.0.join("second.txt")).unwrap(), "two");
+}
+#[test]
+fn timeline_visibility_deletion_keeps_recovery_data_and_can_be_reversed() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let item = timeline::items(&f.0, 50)
+        .unwrap()
+        .into_iter()
+        .find(|i| i.kind == "Commit")
+        .unwrap();
+    timeline::set_visible(&f.0, &item.key, false).unwrap();
+    assert!(
+        timeline::items(&f.0, 50)
+            .unwrap()
+            .iter()
+            .find(|i| i.key == item.key)
+            .unwrap()
+            .hidden
+    );
+    assert!(git::resolve(&f.0, &item.target).is_ok());
+    timeline::set_visible(&f.0, &item.key, true).unwrap();
+    assert!(
+        !timeline::items(&f.0, 50)
+            .unwrap()
+            .iter()
+            .find(|i| i.key == item.key)
+            .unwrap()
+            .hidden
+    );
+}
+#[test]
+fn timeline_completed_conflict_continuation_retains_the_original_before_state() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "base\n");
+    f.commit("Base");
+    git(&f.0, &["switch", "-c", "other"]).unwrap();
+    f.write("a.txt", "other\n");
+    f.commit("Other");
+    git(&f.0, &["switch", "main"]).unwrap();
+    f.write("a.txt", "main\n");
+    f.commit("Main");
+    let original = git::resolve(&f.0, "HEAD").unwrap();
+    let action = timeline::begin(&f.0, "Merge branches").unwrap();
+    assert!(git(&f.0, &["merge", "--no-edit", "other"]).is_err());
+    timeline::finish(&f.0, action, false).unwrap();
+    f.write("a.txt", "combined\n");
+    git(&f.0, &["add", "a.txt"]).unwrap();
+    let continuation = timeline::unavailable(&f.0, "Continue merge", "Active merge").unwrap();
+    git(&f.0, &["commit", "--no-edit"]).unwrap();
+    timeline::finish(&f.0, continuation, true).unwrap();
+    let entry = timeline::candidate(&f.0, false).unwrap();
+    timeline::undo_redo(&f.0, false, &entry.id).unwrap();
+    assert_eq!(git::resolve(&f.0, "HEAD").unwrap(), original);
+    assert_eq!(fs::read_to_string(f.0.join("a.txt")).unwrap(), "main\n");
+}
+
+#[test]
+fn timeline_pins_deleted_branch_objects_through_git_garbage_collection() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    git(&f.0, &["switch", "-c", "temporary"]).unwrap();
+    f.write("unique.txt", "unique");
+    f.commit("Unique branch commit");
+    let tip = git::resolve(&f.0, "HEAD").unwrap();
+    git(&f.0, &["switch", "main"]).unwrap();
+    let entry = timeline::begin(&f.0, "Delete temporary branch").unwrap();
+    let id = entry.id.clone();
+    git(&f.0, &["branch", "-D", "temporary"]).unwrap();
+    timeline::finish(&f.0, entry, true).unwrap();
+    git(&f.0, &["reflog", "expire", "--expire=now", "--all"]).unwrap();
+    git(&f.0, &["gc", "--prune=now"]).unwrap();
+    timeline::undo_redo(&f.0, false, &id).unwrap();
+    assert_eq!(git::resolve(&f.0, "refs/heads/temporary").unwrap(), tip);
+}
+
+#[test]
+fn timeline_failed_action_does_not_claim_external_edits_as_a_completed_undo_step() {
+    use branchroom::timeline;
+    let f = Fixture::new();
+    f.write("a.txt", "root");
+    f.commit("Root");
+    let entry = timeline::begin(&f.0, "A refused stale action").unwrap();
+    f.write("a.txt", "newer external work");
+    timeline::finish(&f.0, entry, false).unwrap();
+    assert!(timeline::candidate(&f.0, false).is_err());
+    assert_eq!(
+        fs::read_to_string(f.0.join("a.txt")).unwrap(),
+        "newer external work"
+    );
+    assert!(
+        timeline::items(&f.0, 50)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "Action")
     );
 }

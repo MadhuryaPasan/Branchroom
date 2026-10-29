@@ -2,6 +2,15 @@ use super::*;
 
 impl Branchroom {
     pub(super) fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(kind) = self
+            .pending
+            .as_ref()
+            .and_then(|p| self.reviewed_graph_kind(&p.task))
+        {
+            self.pending = None;
+            self.confirmation_input.clear();
+            self.begin_graph_action(kind);
+        }
         if let Some(pending) = self.pending.clone() {
             let response =
                 egui::Modal::new(egui::Id::unique("review_operation_modal")).show(ctx, |ui| {
@@ -53,6 +62,19 @@ impl Branchroom {
                                             .join(" ")
                                     ))
                                     .monospace(),
+                                )
+                                .wrap()
+                                .selectable(true),
+                            );
+                        });
+                    }
+                    if let Task::RawGit(args) = &pending.task {
+                        ui.label("This exact Advanced command is not changed by the graph planner");
+                        egui::CollapsingHeader::new("Show Git command").show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(branchroom::operation::display_command(args))
+                                        .monospace(),
                                 )
                                 .wrap()
                                 .selectable(true),
@@ -191,6 +213,7 @@ fn requires_typed_confirmation(pending: &Pending) -> bool {
         return true;
     }
     match &pending.task {
+        Task::RawGit(args) => !branchroom::safety::read_only_git(args),
         Task::History(_)
         | Task::Discard(_)
         | Task::RestoreDiscard(_)
@@ -202,6 +225,7 @@ fn requires_typed_confirmation(pending: &Pending) -> bool {
                 matches!(
                     arg.as_str(),
                     "reset"
+                        | "--amend"
                         | "rebase"
                         | "clean"
                         | "rm"
@@ -211,10 +235,14 @@ fn requires_typed_confirmation(pending: &Pending) -> bool {
                         | "--abort"
                         | "--force-with-lease"
                 ) || arg.starts_with("--force-with-lease=")
-            }) || (args.first().is_some_and(|arg| arg == "stash")
-                && args
-                    .iter()
-                    .any(|arg| matches!(arg.as_str(), "drop" | "clear" | "pop")))
+            }) || (args
+                .first()
+                .is_some_and(|a| ["merge", "cherry-pick"].contains(&a.as_str()))
+                && !args.iter().any(|a| a == "--continue"))
+                || (args.first().is_some_and(|arg| arg == "stash")
+                    && args
+                        .iter()
+                        .any(|arg| matches!(arg.as_str(), "drop" | "clear" | "pop")))
                 || (args.first().is_some_and(|arg| arg == "worktree")
                     && args.iter().any(|arg| arg == "remove"))
         }

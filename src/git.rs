@@ -46,6 +46,8 @@ pub struct Snapshot {
 }
 #[derive(Clone, Debug, Default)]
 pub struct RepoState {
+    pub timeline: Vec<crate::timeline::Item>,
+    pub default_branch: Option<String>,
     pub root: PathBuf,
     pub branch: String,
     pub base: String,
@@ -71,6 +73,30 @@ pub struct RepoState {
 pub fn git(path: &Path, args: &[&str]) -> Result<String> {
     // Diagnostics must not become machine-readable records (notably CRLF warnings on Windows).
     process::stdout("git", path, &strings(args))
+}
+/// Literal local branch name, unaffected by tags with the same short name.
+pub fn current_branch(root: &Path) -> Result<String> {
+    let reference = git(root, &["symbolic-ref", "--quiet", "HEAD"])?;
+    reference
+        .trim()
+        .strip_prefix("refs/heads/")
+        .map(str::to_owned)
+        .ok_or_else(|| "Switch to a local branch".into())
+}
+/// Branch selectors prefer a named branch; explicit refs and object IDs retain Git's meaning.
+pub fn resolve_named_commit(root: &Path, name: &str) -> Result<(String, String)> {
+    if !name.starts_with("refs/")
+        && name != "HEAD"
+        && !((name.len() == 40 || name.len() == 64) && name.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        for prefix in ["refs/heads/", "refs/remotes/"] {
+            let reference = format!("{prefix}{name}");
+            if let Ok(id) = resolve(root, &reference) {
+                return Ok((reference, id));
+            }
+        }
+    }
+    Ok((name.into(), resolve(root, name)?))
 }
 pub fn resolve(path: &Path, reference: &str) -> Result<String> {
     Ok(git(
@@ -112,10 +138,7 @@ pub fn parse_status(output: &str) -> Vec<Change> {
 pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState> {
     let root = PathBuf::from(git(path, &["rev-parse", "--show-toplevel"])?.trim());
     let head = resolve(&root, "HEAD").unwrap_or_default();
-    let branch = git(&root, &["symbolic-ref", "--short", "HEAD"])
-        .unwrap_or_else(|_| "Detached HEAD".into())
-        .trim()
-        .to_owned();
+    let branch = current_branch(&root).unwrap_or_else(|_| "Detached HEAD".into());
     let base = if resolve(&root, preferred_base).is_ok() {
         preferred_base.to_owned()
     } else {
@@ -140,7 +163,7 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
         "--topo-order",
         &count,
         "-z",
-        "--format=%H%x00%P%x00%D%x00%an%x00%ar%x00%s",
+        "--format=%H%x00%P%x00%D%x00%aN%x00%ar%x00%s%x00%aE",
     ];
     if !head.is_empty() {
         history_args.push("HEAD");
@@ -162,14 +185,14 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
                 "--topo-order",
                 &count,
                 "-z",
-                "--format=%H%x00%P%x00%D%x00%an%x00%ar%x00%s",
+                "--format=%H%x00%P%x00%D%x00%aN%x00%ar%x00%s%x00%aE",
                 &head,
             ],
         )?)
     };
-    let base_id = resolve(&root, &base).ok();
+    let base_id = resolve_named_commit(&root, &base).ok().map(|(_, id)| id);
     let format = format!(
-        "--format=%(refname:short)%09%(HEAD)%09%(upstream:short)%09%(upstream:track)%09%(refname)%09%(objectname)%09{}%09%(symref)",
+        "--format=%(refname:short)%09%(HEAD)%09%(upstream)%09%(upstream:track)%09%(refname)%09%(objectname)%09{}%09%(symref)",
         base_id
             .as_ref()
             .map(|id| format!("%(ahead-behind:{id})"))
@@ -213,9 +236,17 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
             String::new()
         };
         branches.push(Branch {
-            name: fields[0].into(),
+            name: fields[4]
+                .strip_prefix("refs/heads/")
+                .or_else(|| fields[4].strip_prefix("refs/remotes/"))
+                .unwrap_or(fields[0])
+                .into(),
             current: fields[1] == "*",
-            upstream: fields[2].into(),
+            upstream: fields[2]
+                .strip_prefix("refs/heads/")
+                .or_else(|| fields[2].strip_prefix("refs/remotes/"))
+                .unwrap_or(fields[2])
+                .into(),
             tracking: fields[3].into(),
             remote: fields[4].starts_with("refs/remotes/"),
             id: fields[5].into(),
@@ -271,6 +302,8 @@ pub fn load(path: &Path, preferred_base: &str, limit: usize) -> Result<RepoState
         .to_owned();
     let commit_locks = crate::commit_lock::read(&root)?;
     Ok(RepoState {
+        timeline: crate::timeline::items(&root, limit)?,
+        default_branch: crate::operation::default_branch(&root),
         head,
         tracking: git(
             &root,
@@ -310,17 +343,25 @@ pub fn validate_branch(path: &Path, name: &str) -> Result<()> {
     git(path, &["check-ref-format", "--branch", name]).map(|_| ())
 }
 
-fn parse_commits(text: &str) -> Vec<Commit> {
+pub(crate) fn parse_commits(text: &str) -> Vec<Commit> {
     let fields: Vec<_> = text.split_terminator('\0').collect();
+    let mut authors = std::collections::HashMap::<String, String>::new();
     fields
-        .as_chunks::<6>()
+        .as_chunks::<7>()
         .0
         .iter()
         .map(|f| Commit {
             id: f[0].trim_start_matches('\n').into(),
             parents: f[1].split_whitespace().map(str::to_owned).collect(),
             refs: f[2].into(),
-            author: f[3].into(),
+            author: if f[6].trim().is_empty() {
+                f[3].into()
+            } else {
+                authors
+                    .entry(f[6].trim().to_lowercase())
+                    .or_insert_with(|| f[3].to_owned())
+                    .clone()
+            },
             date: f[4].into(),
             subject: f[5].into(),
         })
@@ -479,4 +520,47 @@ fn fill_merge_bases(root: &Path, base: &str, branches: &mut [Branch]) -> Result<
         branches[index].fork_point = id;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod author_tests {
+    #[test]
+    fn names_are_canonicalized_by_email_without_merging_distinct_people() {
+        let rows = [
+            [
+                "a",
+                "",
+                "",
+                "Ada Lovelace",
+                "now",
+                "First",
+                "ada@example.test",
+            ],
+            [
+                "b",
+                "",
+                "",
+                "Ada",
+                "yesterday",
+                "Second",
+                "ada@example.test",
+            ],
+            [
+                "c",
+                "",
+                "",
+                "Ada",
+                "yesterday",
+                "Third",
+                "someone@example.test",
+            ],
+        ]
+        .map(|row| row.join("\0") + "\0")
+        .concat();
+        let commits = super::parse_commits(&rows);
+        assert_eq!(commits.len(), 3);
+        assert_eq!(commits[0].author, commits[1].author);
+        assert_eq!(commits[2].author, "Ada");
+        assert_eq!(commits[1].subject, "Second");
+    }
 }

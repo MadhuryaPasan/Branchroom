@@ -21,3 +21,7 @@ pub mod github;
 pub mod conflict;
 
 pub mod image_diff;
+
+pub mod operation;
+
+pub mod timeline;
