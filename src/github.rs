@@ -259,6 +259,17 @@ pub fn templates(root: &Path) -> Vec<std::path::PathBuf> {
     paths
 }
 
+pub fn load_template(root: &Path, path: &Path) -> Result<String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| "Choose a template from this repository.")?;
+    let safe = crate::recovery::checked_path(root, &relative.to_string_lossy())?;
+    if std::fs::metadata(&safe).map_err(|e| e.to_string())?.len() > 128 * 1024 {
+        return Err("This template exceeds 128 KiB. Open it in your editor.".into());
+    }
+    std::fs::read_to_string(safe).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::CreateRequest;
@@ -293,14 +304,4 @@ mod tests {
                 .contains("Choose an existing base branch")
         );
     }
-}
-pub fn load_template(root: &Path, path: &Path) -> Result<String> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| "Choose a template from this repository.")?;
-    let safe = crate::recovery::checked_path(root, &relative.to_string_lossy())?;
-    if std::fs::metadata(&safe).map_err(|e| e.to_string())?.len() > 128 * 1024 {
-        return Err("This template exceeds 128 KiB. Open it in your editor.".into());
-    }
-    std::fs::read_to_string(safe).map_err(|e| e.to_string())
 }
