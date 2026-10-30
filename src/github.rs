@@ -53,6 +53,9 @@ pub struct CreateRequest {
 }
 impl CreateRequest {
     pub fn arguments(&self) -> Result<Vec<String>> {
+        if self.base.trim().is_empty() || self.head.trim().is_empty() {
+            return Err("Choose an existing base branch and compare branch.".into());
+        }
         if self.title.trim().is_empty() || self.head == self.base {
             return Err("Enter a title and choose different base and compare branches.".into());
         }
@@ -254,6 +257,42 @@ pub fn templates(root: &Path) -> Vec<std::path::PathBuf> {
     }
     paths.sort();
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CreateRequest;
+
+    fn request(base: &str, head: &str) -> CreateRequest {
+        CreateRequest {
+            base: base.into(),
+            head: head.into(),
+            head_oid: String::new(),
+            title: "Test pull request".into(),
+            body: String::new(),
+            draft: true,
+            publish_if_needed: false,
+            publish_remote: "origin".into(),
+            reviewers: vec![],
+            labels: vec![],
+        }
+    }
+
+    #[test]
+    fn pull_request_arguments_reject_missing_branch_names() {
+        assert!(
+            request("", "feature")
+                .arguments()
+                .unwrap_err()
+                .contains("Choose an existing base branch")
+        );
+        assert!(
+            request("main", "")
+                .arguments()
+                .unwrap_err()
+                .contains("Choose an existing base branch")
+        );
+    }
 }
 pub fn load_template(root: &Path, path: &Path) -> Result<String> {
     let relative = path

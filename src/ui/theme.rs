@@ -2,9 +2,12 @@
 use branchroom::settings::Settings;
 use eframe::egui::{self, Color32, RichText, Stroke, Vec2};
 
-// Shared scale: compact metadata, readable controls, and page headings.
+// Shared scale: compact metadata, readable controls, subheads, and page headings.
+pub(super) const TEXT_CAPTION: f32 = 11.;
 pub(super) const TEXT_SMALL: f32 = 12.;
 pub(super) const TEXT_BODY: f32 = 14.;
+pub(super) const TEXT_SUBHEAD: f32 = 16.;
+pub(super) const TEXT_HEADER: f32 = 18.;
 pub(super) const TEXT_TITLE: f32 = 24.;
 pub(super) const SPACE: [f32; 6] = [4., 8., 12., 16., 24., 32.];
 
@@ -208,6 +211,27 @@ pub(super) fn badge(ui: &mut egui::Ui, label: &str, color: Color32) {
             ui.add(egui::Label::new(RichText::new(label).color(color).size(12.)).truncate())
                 .on_hover_text(label);
         });
+}
+pub(super) fn status_badge(ui: &mut egui::Ui, code: &str, tooltip: &str, color: Color32) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::hover());
+    let bg = {
+        let paper = SURFACE();
+        let mix = |a: u8, b: u8| ((a as u16 * 6 + b as u16 * 2) / 8) as u8;
+        Color32::from_rgb(
+            mix(paper.r(), color.r()),
+            mix(paper.g(), color.g()),
+            mix(paper.b(), color.b()),
+        )
+    };
+    ui.painter().rect_filled(rect, 3., bg);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        code,
+        egui::FontId::monospace(11.),
+        color,
+    );
+    resp.on_hover_text(tooltip);
 }
 pub(super) fn section(ui: &mut egui::Ui, label: &str) {
     ui.label(RichText::new(label).size(12.).strong().color(MUTED()));

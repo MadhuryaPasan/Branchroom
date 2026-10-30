@@ -103,6 +103,29 @@ pub fn resolve_named_commit(root: &Path, name: &str) -> Result<(String, String)>
                 return Ok((reference, id));
             }
         }
+        let suffix = format!("/{name}");
+        let matching_remotes: Vec<String> = git(
+            root,
+            &["for-each-ref", "--format=%(refname)", "refs/remotes"],
+        )?
+        .lines()
+        .filter(|reference| {
+            reference
+                .strip_prefix("refs/remotes/")
+                .is_some_and(|remote_branch| remote_branch.ends_with(&suffix))
+        })
+        .map(str::to_owned)
+        .collect();
+        if matching_remotes.len() == 1 {
+            let reference = matching_remotes[0].clone();
+            let id = resolve(root, &reference)?;
+            return Ok((reference, id));
+        }
+        if matching_remotes.len() > 1 {
+            return Err(format!(
+                "Branch name '{name}' matches multiple remote branches. Choose a remote-qualified branch."
+            ));
+        }
     }
     Ok((name.into(), resolve(root, name)?))
 }
@@ -579,6 +602,55 @@ pub fn commit_details(root: &Path, reference: &str) -> Result<Commit> {
 
 #[cfg(test)]
 mod author_tests {
+    fn repository_with_commit() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "branchroom-resolve-{}",
+            crate::snapshot::unique_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        super::git(&root, &["init", "--quiet"]).unwrap();
+        super::git(&root, &["config", "user.name", "Branchroom Test"]).unwrap();
+        super::git(
+            &root,
+            &["config", "user.email", "branchroom-test@example.invalid"],
+        )
+        .unwrap();
+        super::git(&root, &["commit", "--allow-empty", "-m", "Initial"]).unwrap();
+        root
+    }
+
+    #[test]
+    fn short_branch_name_resolves_a_unique_remote_branch() {
+        let root = repository_with_commit();
+        let id = super::git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        super::git(&root, &["update-ref", "refs/remotes/origin/main", &id]).unwrap();
+
+        let (reference, resolved) = super::resolve_named_commit(&root, "main").unwrap();
+
+        assert_eq!(reference, "refs/remotes/origin/main");
+        assert_eq!(resolved, id);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn short_branch_name_rejects_ambiguous_remote_branches() {
+        let root = repository_with_commit();
+        let id = super::git(&root, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        super::git(&root, &["update-ref", "refs/remotes/origin/main", &id]).unwrap();
+        super::git(&root, &["update-ref", "refs/remotes/upstream/main", &id]).unwrap();
+
+        let error = super::resolve_named_commit(&root, "main").unwrap_err();
+
+        assert!(error.contains("matches multiple remote branches"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn worktree_parser_handles_multiple_records_and_detached_heads() {
         let output = concat!(

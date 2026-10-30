@@ -151,7 +151,7 @@ impl Branchroom {
                     let picker = theme::toolbar_selector(
                         ui,
                         if ctx.content_rect().width() < 800. {
-                            95.
+                            100.
                         } else {
                             190.
                         },
@@ -173,11 +173,11 @@ impl Branchroom {
                     if self.repo.is_some() {
                         self.smart_sync(ui, ctx, writable);
                     } else {
-                        ui.add_enabled(false, egui::Button::new("Sync"));
+                        ui.add_enabled(false, egui::Button::new("Sync").min_size(egui::vec2(0., 32.)));
                     }
                     if ui
                         .add_sized(
-                            [if compact { 100. } else { 220. }, 28.],
+                            [if compact { 110. } else { 220. }, 32.],
                             egui::Button::new(
                                 RichText::new(if compact {
                                     "Search  Ctrl+K"
@@ -197,7 +197,7 @@ impl Branchroom {
                         ctx.memory_mut(|m| m.request_focus(egui::Id::unique("command_bar_search")));
                     }
                     if ui
-                        .add_enabled(self.repo.is_some(), egui::Button::new("Open in IDE"))
+                        .add_enabled(self.repo.is_some(), egui::Button::new("Open in IDE").min_size(egui::vec2(0., 32.)))
                         .on_hover_text("Open this repository in its preferred IDE")
                         .clicked()
                     {
@@ -291,24 +291,7 @@ impl Branchroom {
                 .default_size(150.)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        section(ui, "Activity");
-                        if ui
-                            .small_button("+")
-                            .on_hover_text("Increase interface scale")
-                            .clicked()
-                        {
-                            ctx.set_zoom_factor((ctx.zoom_factor() + 0.1).min(2.));
-                            self.settings.ui_zoom = ctx.zoom_factor();
-                        }
-                        if ui
-                            .small_button("−")
-                            .on_hover_text("Decrease interface scale")
-                            .clicked()
-                        {
-                            ctx.set_zoom_factor((ctx.zoom_factor() - 0.1).max(0.75));
-                            self.settings.ui_zoom = ctx.zoom_factor();
-                        }
-
+                        section(ui, "Activity log");
                         if ui.button("Copy output").clicked() {
                             ctx.copy_text(self.output.clone());
                         }
@@ -342,6 +325,11 @@ impl Branchroom {
                     if self.settings.advanced_mode {
                         self.navigation_row(ui, Page::Tools, Icon::Code);
                     }
+                    ui.add_space(16.);
+                    section(ui, "SYSTEM");
+                    ui.add_space(6.);
+                    self.navigation_row(ui, Page::Remotes, Icon::Folder);
+                    self.navigation_row(ui, Page::Settings, Icon::Settings);
                 });
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(0)).show(ui, |ui| {
@@ -524,7 +512,7 @@ impl Branchroom {
         }
         let response = egui::Modal::new(egui::Id::unique("command_bar")).show(ctx, |ui| {
             ui.set_width(480_f32.min((ctx.content_rect().width() - 48.).max(200.)));
-            ui.heading("What would you like to do?");
+            ui.label(RichText::new("What would you like to do?").size(TEXT_HEADER).strong());
             ui.add(
                 egui::TextEdit::singleline(&mut self.command_bar_query)
                     .id(egui::Id::unique("command_bar_search"))
@@ -852,9 +840,9 @@ impl Branchroom {
         let picker = theme::toolbar_selector(
             ui,
             if ctx.content_rect().width() < 800. {
-                95.
+                100.
             } else {
-                180.
+                190.
             },
             "Current branch",
             &repo.branch,
@@ -954,9 +942,11 @@ impl Branchroom {
         } else {
             ACCENT()
         };
-        let sync = ui.menu_button(
-            RichText::new(label).color(state_color),
-            |ui| {
+        let sync = egui::containers::menu::MenuButton::from_button(
+            egui::Button::new(RichText::new(label).color(state_color).strong())
+                .min_size(egui::vec2(0., 32.)),
+        )
+        .ui(ui, |ui| {
                 ui.set_max_width((ctx.content_rect().width() - 48.).clamp(180., 360.));
                 ui.label(RichText::new("Sync this branch").strong());
                 ui.horizontal_wrapped(|ui| {
@@ -1078,7 +1068,7 @@ impl Branchroom {
                 });
             },
         );
-        sync.response
+        sync.0
             .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, ui.is_enabled(), "Sync"));
     }
     fn publish_controls(&mut self, ui: &mut egui::Ui, writable: bool) {
@@ -1118,6 +1108,13 @@ impl Branchroom {
             egui::WidgetInfo::selected(egui::Role::Button, ui.is_enabled(), selected, page.title())
         });
         let rect = response.rect;
+        if selected {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(rect.left_top(), egui::vec2(3., rect.height())),
+                1.5,
+                ACCENT(),
+            );
+        }
         icon(
             ui.painter(),
             egui::Rect::from_center_size(
@@ -1144,7 +1141,7 @@ impl Branchroom {
     }
     fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Frame::new().inner_margin(36).show(ui, |ui| {
-            ui.heading("Open a repository");
+            ui.label(RichText::new("Open a repository").size(TEXT_HEADER).strong());
             subtitle(
                 ui,
                 "Choose a repository on this computer or clone one to get started.",

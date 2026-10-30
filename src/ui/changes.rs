@@ -85,7 +85,7 @@ impl Branchroom {
         let writable = !branchroom::safety::is_protected(&repo.root) && self.receiver.is_none();
         let compact = ui.available_width() < 760.;
         egui::Panel::top("changes_header").frame(egui::Frame::new().fill(PAPER()).inner_margin(if compact{8}else{16})).show(ui,|ui|{
-            ui.horizontal_wrapped(|ui|{ui.heading("Changes");badge(ui,&format!("{} {}",repo.changes.len(),if repo.changes.len()==1{"file"}else{"files"}),WARNING());if ui.available_width()>700.{badge(ui,&repo.branch,ACCENT());}
+            ui.horizontal_wrapped(|ui|{ui.label(RichText::new("Changes").size(TEXT_HEADER).strong());badge(ui,&format!("{} {}",repo.changes.len(),if repo.changes.len()==1{"file"}else{"files"}),WARNING());if ui.available_width()>700.{badge(ui,&repo.branch,ACCENT());}
                 ui.menu_button("Actions",|ui|{
                 if ui.button("Stash changes…").clicked(){self.form("Save stash","Save tracked and non-ignored untracked files, then clean the working tree.","git",&["stash","push","--include-untracked","-m"],&[("Stash message","")],&[]);}
                 if ui.button("Recover discarded files").clicked(){self.page=Page::Compare;}
@@ -117,7 +117,7 @@ impl Branchroom {
             egui::CentralPanel::default()
                 .frame(egui::Frame::new().fill(PAPER()).inner_margin(16))
                 .show(ui, |ui| {
-                    ui.heading("Working tree is clean");
+                    ui.label(RichText::new("Working tree is clean").size(TEXT_HEADER).strong());
                     subtitle(
                         ui,
                         "There are no file changes to stage or commit. Keep moving with your branch.",
@@ -202,28 +202,36 @@ impl Branchroom {
 
     fn commit_composer(&mut self, ui: &mut egui::Ui) {
         section(ui, "COMMIT");
-        ui.label("Summary (required)");
+        ui.add_space(4.);
+        let count = self.commit_message.chars().count();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Summary (required)").strong());
+            if count > 0 {
+                let color = if count > 72 { WARNING() } else { MUTED() };
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(format!("{count}/72")).color(color).size(TEXT_CAPTION));
+                });
+            }
+        });
         ui.add(
             egui::TextEdit::singleline(&mut self.commit_message)
                 .id(egui::Id::unique("commit_summary"))
                 .desired_width(f32::INFINITY)
                 .hint_text("Describe the change"),
         );
-        ui.label(format!(
-            "{} characters in summary",
-            self.commit_message.chars().count()
-        ));
-        ui.label("Description");
+        ui.add_space(4.);
+        ui.label(RichText::new("Description").strong());
         ui.add(
             egui::TextEdit::multiline(&mut self.commit_description)
                 .desired_rows(3)
                 .desired_width(f32::INFINITY)
-                .hint_text("Why is this change needed?"),
+                .hint_text("Why is this change needed? (optional)"),
         );
+        ui.add_space(4.);
         ui.horizontal_wrapped(|ui| {
             ui.checkbox(&mut self.amend, "Amend latest commit");
             egui::CollapsingHeader::new("Co-authors").show(ui, |ui| {
-                ui.label("One author per line");
+                ui.label("One author per line (Name <email@example.com>)");
                 ui.add(
                     egui::TextEdit::multiline(&mut self.coauthor)
                         .desired_rows(2)
@@ -441,8 +449,8 @@ impl Branchroom {
             });
             if checkbox.on_hover_text(format!("Include {}",change.path)).changed(){if staged{self.run_git(&["add","--",&change.path],ctx);}else if self.repo.as_ref().is_some_and(|r|r.head.is_empty()){self.run_git(&["rm","--cached","--",&change.path],ctx);}else{self.run_git(&["restore","--staged","--",&change.path],ctx);}}
             let (status,status_text,color)=if lock.is_some(){("L","Locked",MUTED())}else if change.conflict(){("!","Conflict",DANGER())}else if change.index=='?' {("U","Untracked",SUCCESS())}else if change.index=='A'||change.worktree=='A'{("A","Added",SUCCESS())}else if change.index=='D'||change.worktree=='D'{("D","Deleted",DANGER())}else if change.index=='R'||change.worktree=='R'{("R","Renamed",ACCENT())}else{("M","Modified",WARNING())};
-            ui.add_sized([16.,28.],egui::Label::new(RichText::new(status).size(12.).strong().color(color))).on_hover_text(status_text);
-            let file_width=(ui.available_width()-48.).max(20.);
+            theme::status_badge(ui, status, status_text, color);
+            let file_width=(ui.available_width()-44.).max(20.);
             let selected=self.selected_path==change.path;
             let response=ui.add_sized([file_width,32.],egui::Button::new("").selected(selected).frame_when_inactive(selected));
             theme::paint_file_label(ui,response.rect,label);
@@ -466,7 +474,7 @@ if ui.button(RichText::new("Discard working changes…").color(DANGER())).clicke
 
     fn patch_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, writable: bool) {
         if self.selected_path.is_empty() {
-            ui.heading("Select a changed file");
+            ui.label(RichText::new("Select a changed file").size(TEXT_HEADER).strong());
             subtitle(
                 ui,
                 "Review its patch, then include the whole file or selected changes.",
@@ -569,7 +577,7 @@ if ui.button(RichText::new("Discard working changes…").color(DANGER())).clicke
             return;
         }
         if patch.binary {
-            ui.heading("Binary file");
+            ui.label(RichText::new("Binary file").size(TEXT_HEADER).strong());
             subtitle(
                 ui,
                 "This file has no text patch. Include or discard it using the file controls.",

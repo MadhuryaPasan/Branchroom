@@ -23,7 +23,7 @@ impl Branchroom {
         let conflicts: Vec<_> = repo.changes.iter().filter(|c| c.conflict()).collect();
         if conflicts.is_empty() {
             surface().show(ui, |ui| {
-                ui.heading("No unmerged files");
+                ui.label(RichText::new("No unmerged files").size(TEXT_HEADER).strong());
                 subtitle(
                     ui,
                     if repo.operation.is_empty() {
@@ -310,7 +310,7 @@ impl Branchroom {
             "Review proposed changes or create a pull request for your branch.",
         );
         if !self.github_available {
-            surface().show(ui,|ui|{ui.heading("Set up GitHub access");ui.label("Install GitHub CLI, then sign in to browse and manage pull requests. Git-only features are available without it.");ui.hyperlink_to("Open GitHub CLI installation instructions","https://cli.github.com/");if ui.button("Check installation again").clicked(){self.github_available=process::find_executable("gh").is_some();if self.github_available{self.report(Ok("GitHub CLI found. Select Sign in to GitHub to continue.".into()));}else{self.report(Err("GitHub CLI was not found. Install it, then check again. If it was installed outside the standard location, restart Branchroom after adding it to PATH.".into()));}}});
+            surface().show(ui,|ui|{ui.label(RichText::new("Set up GitHub access").size(TEXT_HEADER).strong());ui.label("Install GitHub CLI, then sign in to browse and manage pull requests. Git-only features are available without it.");ui.hyperlink_to("Open GitHub CLI installation instructions","https://cli.github.com/");if ui.button("Check installation again").clicked(){self.github_available=process::find_executable("gh").is_some();if self.github_available{self.report(Ok("GitHub CLI found. Select Sign in to GitHub to continue.".into()));}else{self.report(Err("GitHub CLI was not found. Install it, then check again. If it was installed outside the standard location, restart Branchroom after adding it to PATH.".into()));}}});
             return;
         }
         self.github_connection(ui, ctx);
@@ -495,10 +495,28 @@ impl Branchroom {
                 ui,
                 "Checks local changes every 30 seconds and fetches remote updates every 5 minutes while idle.",
             );
-            if ui.button("Reset interface scale to 100%").clicked() {
-                ui.ctx().set_zoom_factor(1.);
-                self.settings.ui_zoom = 1.;
-            }
+            ui.add_space(8.);
+            ui.horizontal(|ui| {
+                ui.label("Interface scale");
+                if ui.button("−").on_hover_text("Decrease interface scale").clicked() {
+                    let zoom = (ui.ctx().zoom_factor() - 0.1).max(0.75);
+                    ui.ctx().set_zoom_factor(zoom);
+                    self.settings.ui_zoom = zoom;
+                    self.save();
+                }
+                ui.label(RichText::new(format!("{:.0}%", ui.ctx().zoom_factor() * 100.)).strong());
+                if ui.button("+").on_hover_text("Increase interface scale").clicked() {
+                    let zoom = (ui.ctx().zoom_factor() + 0.1).min(2.0);
+                    ui.ctx().set_zoom_factor(zoom);
+                    self.settings.ui_zoom = zoom;
+                    self.save();
+                }
+                if ui.button("Reset (100%)").clicked() {
+                    ui.ctx().set_zoom_factor(1.);
+                    self.settings.ui_zoom = 1.;
+                    self.save();
+                }
+            });
         });
         ui.add_space(12.);
         egui::CollapsingHeader::new("About Branchroom").show(ui, |ui| {

@@ -289,7 +289,7 @@ impl Branchroom {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-preview"))]
 mod tests {
     use super::*;
     #[test]

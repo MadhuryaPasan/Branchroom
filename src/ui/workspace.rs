@@ -187,7 +187,7 @@ impl Branchroom {
         let compact = ui.available_width() < 700.;
         egui::Panel::top("branch_controls").frame(egui::Frame::new().fill(PAPER()).inner_margin(if compact{10}else{20})).show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{
-                ui.heading("Branch map");
+                ui.label(RichText::new("Branch map").size(TEXT_HEADER).strong());
                 ui.menu_button("Clean up branches",|ui| {
                     subtitle(ui,"Review merged branches below. Deleting saves a Time Machine checkpoint first.");ui.checkbox(&mut self.cleanup_branches,"Highlight merged branches");
                     for branch in repo.branches.iter().filter(|b|!b.current&&!b.remote&&b.ahead==0) {
@@ -337,7 +337,7 @@ impl Branchroom {
                         });
                     }
                 }
-                if repo.branches.is_empty(){ui.heading("No branches yet");subtitle(ui,"Create your first commit from Changes to establish a branch.");}
+                if repo.branches.is_empty(){ui.label(RichText::new("No branches yet").size(TEXT_HEADER).strong());subtitle(ui,"Create your first commit from Changes to establish a branch.");}
             });
         });
     }

@@ -139,7 +139,7 @@ impl Branchroom {
             )
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.heading("Graph");
+                    ui.label(RichText::new("Graph").size(TEXT_HEADER).strong());
                     badge(
                         ui,
                         &format!(
@@ -160,6 +160,9 @@ impl Branchroom {
                             .desired_width((ui.available_width() * 0.38).clamp(140., 360.))
                             .hint_text("Message, author, branch, file:path, after:YYYY-MM-DD"),
                     );
+                    if !self.query.is_empty() && ui.small_button("Clear").clicked() {
+                        self.query.clear();
+                    }
                     if ctx.content_rect().width()>=800. {
                         badge(ui, &repo.branch, ACCENT());
                         ui.label(RichText::new("Checked-out branch").size(12.).color(MUTED())).on_hover_text("All loaded branches share this graph. Select a branch label to inspect its tip.");
@@ -218,9 +221,6 @@ impl Branchroom {
                     let mut width=ctx.data(|d|d.get_temp::<f32>(id)).unwrap_or(340.);
                     if column_input(ui,"Details",&mut width,280.0..=600.0){ctx.data_mut(|d|d.insert_temp(id,width));}
                     });
-                    if !self.query.is_empty() && ui.small_button("Clear").clicked() {
-                        self.query.clear();
-                    }
                 });
             });
         }
@@ -321,13 +321,13 @@ impl Branchroom {
                     if let Some(Err(error)) = &self.history_view.search_ids {
                         ui.colored_label(DANGER(), error);
                     }
-                    ui.heading(if self.history_view.search_receiver.is_some() {
+                    ui.label(RichText::new(if self.history_view.search_receiver.is_some() {
                         "Searching history"
                     } else if self.query.is_empty() {
                         "No commits yet"
                     } else {
                         "No matching commits"
-                    });
+                    }).size(TEXT_HEADER).strong());
                     subtitle(
                         ui,
                         if self.query.is_empty() {
@@ -384,6 +384,15 @@ impl Branchroom {
                                 egui::Sense::hover(),
                             );
                             ui.painter().rect_filled(header, 0., SURFACE());
+                            if header.height() > 0. {
+                                ui.painter().line_segment(
+                                    [
+                                        egui::pos2(header.left(), header.bottom()),
+                                        egui::pos2(header.right(), header.bottom()),
+                                    ],
+                                    egui::Stroke::new(1., LINE()),
+                                );
+                            }
                             let x = [
                                 header.left(),
                                 header.left() + widths[0],
@@ -624,7 +633,7 @@ impl Branchroom {
                                         let commit_end = rect.left() + widths[0] + widths[1];
                                         let author_end = commit_end + widths[2];
                                         let title_rect = egui::Rect::from_min_max(
-                                            egui::pos2(start + if selected { 56. } else { 0. }, rect.top()),
+                                            egui::pos2(start, rect.top()),
                                             egui::pos2(
                                                 commit_end - 10.,
                                                 rect.bottom()
@@ -637,20 +646,6 @@ impl Branchroom {
                                                     },
                                             ),
                                         );
-                                        if selected {
-                                            let active_rect = egui::Rect::from_center_size(
-                                                egui::pos2(start + 24., rect.center().y),
-                                                egui::vec2(48., 18.),
-                                            );
-                                            ui.painter().rect_filled(active_rect, 4., SURFACE());
-                                            ui.painter().text(
-                                                active_rect.center(),
-                                                egui::Align2::CENTER_CENTER,
-                                                "Active",
-                                                egui::FontId::proportional(TEXT_SMALL),
-                                                ACCENT(),
-                                            );
-                                        }
                                         text_at(ui, title_rect, &commit.subject, 14., INK(), false);
                                         if show_author {
                                             let center =

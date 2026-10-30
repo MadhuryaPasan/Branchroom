@@ -19,7 +19,7 @@ impl Branchroom {
         };
         let response = egui::Modal::new(egui::Id::unique("open_review")).show(ctx, |ui| {
             ui.set_width(480.0_f32.min(ctx.content_rect().width()-48.));
-            ui.heading("Open code in an IDE");
+            ui.label(RichText::new("Open code in an IDE").size(TEXT_HEADER).strong());
             ui.label(format!("Version: {reference}"));
             subtitle(ui, "Create a separate working directory at this version. Your current branch and uncommitted changes stay where they are. Create a branch in the review directory before keeping new commits.");
             ui.add_space(12.);
@@ -275,7 +275,11 @@ impl Branchroom {
                 .unwrap_or_else(|| "Choose a local compare branch before publishing.".into())
         };
         let preview_key = format!("{}\u{0}{}", self.pr_head, self.pr_base);
-        if !self.preview_mode
+        let preview_selection_valid = !self.pr_head.trim().is_empty()
+            && !self.pr_base.trim().is_empty()
+            && self.pr_head != self.pr_base;
+        if preview_selection_valid
+            && !self.preview_mode
             && preview_key != self.pr_preview_key
             && preview_key != self.pr_preview_requested
             && self.receiver.is_none()
@@ -427,6 +431,7 @@ impl Branchroom {
                 }
                 let can_publish = ready || (self.pr_publish_if_needed && !remotes.is_empty());
                 let can_create = can_publish
+                    && !self.pr_base.trim().is_empty()
                     && !self.pr_title.trim().is_empty()
                     && self.pr_head != self.pr_base
                     && branch.is_some();
@@ -495,7 +500,9 @@ impl Branchroom {
                 if !can_create {
                     subtitle(
                         ui,
-                        if branch.is_none() {
+                        if self.pr_base.trim().is_empty() {
+                            "Choose an existing base branch."
+                        } else if branch.is_none() {
                             "Choose an existing local compare branch."
                         } else if self.pr_head == self.pr_base {
                             "Choose different base and compare branches."
@@ -549,8 +556,13 @@ impl Branchroom {
                     subtitle(ui, &format!("Labels: {}", self.pr_labels.trim()));
                 }
                 ui.add_space(12.);
-                ui.heading("Changes in this pull request");
-                if self.preview_mode && self.pr_preview_key != preview_key {
+                ui.label(RichText::new("Changes in this pull request").size(TEXT_SUBHEAD).strong());
+                if !preview_selection_valid {
+                    subtitle(
+                        ui,
+                        "Choose different existing base and compare branches to preview changes.",
+                    );
+                } else if self.preview_mode && self.pr_preview_key != preview_key {
                     subtitle(
                         ui,
                         "Live pull request preview is unavailable in UI preview.",

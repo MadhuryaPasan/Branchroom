@@ -139,7 +139,7 @@ impl Branchroom {
             )
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.heading("Time Machine");
+                    ui.label(RichText::new("Time Machine").size(TEXT_HEADER).strong());
                     if ui
                         .add_enabled(
                             writable,
@@ -207,7 +207,7 @@ impl Branchroom {
             egui::ScrollArea::vertical().id_salt("action_timeline").show(ui,|ui|{
                 if let Some(plan)=self.time_machine.plan.clone(){
                     surface().show(ui,|ui|{
-                        ui.heading("Preview restore");ui.label(&plan.label);
+                        ui.label(RichText::new("Preview restore").size(TEXT_HEADER).strong());ui.label(&plan.label);
                         subtitle(ui,"A safety point is saved before restoring. Newer changes must still match this preview");
                         ui.label(format!("{} → {}",plan.from.branch.as_deref().unwrap_or("Detached commit").trim_start_matches("refs/heads/"),plan.to.branch.as_deref().unwrap_or("Detached commit").trim_start_matches("refs/heads/")));
                         ui.label(&plan.summary);
@@ -246,7 +246,7 @@ impl Branchroom {
                 }
                 let query=self.time_machine.filter.to_lowercase();
                 let filtered=items.iter().filter(|item|format!("{} {} {}",item.label,item.kind,item.date).to_lowercase().contains(&query)).collect::<Vec<_>>();
-                if filtered.is_empty(){ui.heading("Your next action starts the timeline");subtitle(ui,"Save a safety point, commit changes, or shelve unfinished work. Existing saved versions stay available here");}
+                if filtered.is_empty(){ui.label(RichText::new("Your next action starts the timeline").size(TEXT_HEADER).strong());subtitle(ui,"Save a safety point, commit changes, or shelve unfinished work. Existing saved versions stay available here");}
                 for item in filtered {
                     ui.horizontal_top(|ui|{
                         let (rect,_)=ui.allocate_exact_size(egui::vec2(20.,68.),egui::Sense::hover());

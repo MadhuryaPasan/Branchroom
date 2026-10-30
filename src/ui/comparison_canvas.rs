@@ -3,6 +3,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct ComparisonView {
     pub(super) advanced: bool,
+    repository: std::path::PathBuf,
     key: String,
     receiver: Option<Receiver<Result<Comparison>>>,
     data: Option<Result<Comparison>>,
@@ -16,6 +17,33 @@ struct Comparison {
 impl Branchroom {
     pub(super) fn comparison_canvas(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let repo = self.repo.as_ref().unwrap().clone();
+        if self.comparison.repository != repo.root {
+            self.comparison.repository = repo.root.clone();
+            self.compare_base = if repo.base != "HEAD" {
+                repo.base.clone()
+            } else {
+                repo.branches
+                    .iter()
+                    .find(|branch| branch.id != repo.head)
+                    .map(|branch| {
+                        format!(
+                            "refs/{}/{}",
+                            if branch.remote { "remotes" } else { "heads" },
+                            branch.name
+                        )
+                    })
+                    .or_else(|| {
+                        repo.commits
+                            .iter()
+                            .find(|commit| commit.id != repo.head)
+                            .map(|commit| commit.id.clone())
+                    })
+                    .unwrap_or_else(|| "HEAD".into())
+            };
+            self.compare_head = "HEAD".into();
+            self.comparison.key.clear();
+            self.comparison.data = None;
+        }
         let tips = repo
             .branches
             .iter()
@@ -297,7 +325,7 @@ impl Branchroom {
                             |ui: &mut egui::Ui, title: &str, commits: &[(String, String)]| {
                                 surface().show(ui, |ui| {
                                     ui.horizontal_wrapped(|ui| {
-                                        ui.heading(title);
+                                        ui.label(RichText::new(title).size(TEXT_SUBHEAD).strong());
                                         badge(ui, &commits.len().to_string(), MUTED());
                                     });
                                     if commits.is_empty() {
@@ -353,7 +381,7 @@ impl Branchroom {
                         ui.add_space(12.);
                         surface().show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                ui.heading("Files changed between branches");
+                                ui.label(RichText::new("Files changed between branches").size(TEXT_SUBHEAD).strong());
                                 badge(ui, &data.files.len().to_string(), MUTED());
                             });
                             subtitle(ui, "Files changed between the two selected branch tips.");
