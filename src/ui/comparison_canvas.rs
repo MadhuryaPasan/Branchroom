@@ -381,7 +381,11 @@ impl Branchroom {
                         ui.add_space(12.);
                         surface().show(ui, |ui| {
                             ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new("Files changed between branches").size(TEXT_SUBHEAD).strong());
+                                ui.label(
+                                    RichText::new("Files changed between branches")
+                                        .size(TEXT_SUBHEAD)
+                                        .strong(),
+                                );
                                 badge(ui, &data.files.len().to_string(), MUTED());
                             });
                             subtitle(ui, "Files changed between the two selected branch tips.");

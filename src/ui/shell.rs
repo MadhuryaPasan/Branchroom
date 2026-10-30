@@ -173,7 +173,10 @@ impl Branchroom {
                     if self.repo.is_some() {
                         self.smart_sync(ui, ctx, writable);
                     } else {
-                        ui.add_enabled(false, egui::Button::new("Sync").min_size(egui::vec2(0., 32.)));
+                        ui.add_enabled(
+                            false,
+                            egui::Button::new("Sync").min_size(egui::vec2(0., 32.)),
+                        );
                     }
                     if ui
                         .add_sized(
@@ -197,7 +200,10 @@ impl Branchroom {
                         ctx.memory_mut(|m| m.request_focus(egui::Id::unique("command_bar_search")));
                     }
                     if ui
-                        .add_enabled(self.repo.is_some(), egui::Button::new("Open in IDE").min_size(egui::vec2(0., 32.)))
+                        .add_enabled(
+                            self.repo.is_some(),
+                            egui::Button::new("Open in IDE").min_size(egui::vec2(0., 32.)),
+                        )
                         .on_hover_text("Open this repository in its preferred IDE")
                         .clicked()
                     {
@@ -1141,7 +1147,11 @@ impl Branchroom {
     }
     fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Frame::new().inner_margin(36).show(ui, |ui| {
-            ui.label(RichText::new("Open a repository").size(TEXT_HEADER).strong());
+            ui.label(
+                RichText::new("Open a repository")
+                    .size(TEXT_HEADER)
+                    .strong(),
+            );
             subtitle(
                 ui,
                 "Choose a repository on this computer or clone one to get started.",

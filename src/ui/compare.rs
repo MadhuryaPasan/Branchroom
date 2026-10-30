@@ -70,7 +70,11 @@ if index+1<self.reorder_ids.len()&&ui.small_button("Move later").clicked(){movem
         };
         let response = egui::Modal::new(egui::Id::unique("branch_switch")).show(ctx, |ui| {
             ui.set_width(470.);
-            ui.label(RichText::new(format!("Switch to {branch}")).size(TEXT_HEADER).strong());
+            ui.label(
+                RichText::new(format!("Switch to {branch}"))
+                    .size(TEXT_HEADER)
+                    .strong(),
+            );
             let dirty = self.repo.as_ref().is_some_and(|r| !r.changes.is_empty());
             if dirty {
                 ui.label("You have uncommitted changes. Choose what happens to them.");

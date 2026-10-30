@@ -12,7 +12,11 @@ impl Branchroom {
         let writable = !branchroom::safety::is_protected(&self.path()) && self.receiver.is_none();
         ui.horizontal_wrapped(|ui| {
             badge(ui, if pr.is_draft { "Draft" } else { &pr.state }, ACCENT());
-            ui.label(RichText::new(format!("#{} {}", pr.number, pr.title)).size(TEXT_HEADER).strong());
+            ui.label(
+                RichText::new(format!("#{} {}", pr.number, pr.title))
+                    .size(TEXT_HEADER)
+                    .strong(),
+            );
         });
         ui.hyperlink_to("Open pull request in GitHub", &pr.url);
         subtitle(

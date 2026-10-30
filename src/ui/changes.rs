@@ -209,7 +209,11 @@ impl Branchroom {
             if count > 0 {
                 let color = if count > 72 { WARNING() } else { MUTED() };
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{count}/72")).color(color).size(TEXT_CAPTION));
+                    ui.label(
+                        RichText::new(format!("{count}/72"))
+                            .color(color)
+                            .size(TEXT_CAPTION),
+                    );
                 });
             }
         });
@@ -474,7 +478,11 @@ if ui.button(RichText::new("Discard working changes…").color(DANGER())).clicke
 
     fn patch_view(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, writable: bool) {
         if self.selected_path.is_empty() {
-            ui.label(RichText::new("Select a changed file").size(TEXT_HEADER).strong());
+            ui.label(
+                RichText::new("Select a changed file")
+                    .size(TEXT_HEADER)
+                    .strong(),
+            );
             subtitle(
                 ui,
                 "Review its patch, then include the whole file or selected changes.",

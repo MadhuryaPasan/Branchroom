@@ -23,7 +23,11 @@ impl Branchroom {
         let conflicts: Vec<_> = repo.changes.iter().filter(|c| c.conflict()).collect();
         if conflicts.is_empty() {
             surface().show(ui, |ui| {
-                ui.label(RichText::new("No unmerged files").size(TEXT_HEADER).strong());
+                ui.label(
+                    RichText::new("No unmerged files")
+                        .size(TEXT_HEADER)
+                        .strong(),
+                );
                 subtitle(
                     ui,
                     if repo.operation.is_empty() {

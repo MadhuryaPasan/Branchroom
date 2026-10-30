@@ -116,7 +116,10 @@ impl Branchroom {
                             self.confirmation_input.clear();
                             self.execute(pending.task.clone(), ctx);
                         }
-                        if ui.add(egui::Button::new("Cancel").min_size(egui::vec2(80., 32.))).clicked() {
+                        if ui
+                            .add(egui::Button::new("Cancel").min_size(egui::vec2(80., 32.)))
+                            .clicked()
+                        {
                             self.pending = None;
                             self.confirmation_input.clear();
                         }
