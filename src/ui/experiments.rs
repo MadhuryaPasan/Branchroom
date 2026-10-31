@@ -83,13 +83,13 @@ impl Branchroom {
             return;
         }
         let response=egui::Modal::new(egui::Id::unique("capture_snapshot_modal")).show(ctx,|ui|{
-            ui.set_width(470.);ui.heading("Capture snapshot");ui.add_space(8.);
+            ui.set_width(470.);ui.heading("Save checkpoint");ui.add_space(8.);
             subtitle(ui,"Save this version without changing your branch or staging area.");ui.add_space(20.);
-            ui.label("Snapshot name");ui.add(egui::TextEdit::singleline(&mut self.snapshot_label).desired_width(f32::INFINITY).hint_text("Try a larger offline cache"));
+            ui.label("Checkpoint name");ui.add(egui::TextEdit::singleline(&mut self.snapshot_label).desired_width(f32::INFINITY).hint_text("Try a larger offline cache"));
             ui.add_space(12.);subtitle(ui,"Includes tracked files and non-ignored new files. Ignored files and changes inside submodules are excluded.");ui.add_space(24.);
             ui.horizontal(|ui|{
-                if primary(ui,"Capture working files").clicked(){
-                    if self.snapshot_label.trim().is_empty(){self.report(Err("Enter a snapshot name, then capture again.".into()));}
+                if primary(ui,"Save checkpoint").clicked(){
+                    if self.snapshot_label.trim().is_empty(){self.report(Err("Enter a checkpoint name, then save again.".into()));}
                     else{self.capture_open=false;self.execute(Task::Snapshot(self.snapshot_label.clone()),ctx);}
                 }
                 if ui.button("Cancel").clicked(){self.capture_open=false;}
@@ -104,7 +104,7 @@ impl Branchroom {
         egui::ScrollArea::vertical().id_salt("snapshot_details").show(ui,|ui| {
             section(ui,"SNAPSHOT DETAILS");ui.add_space(18.);
             let saved=self.repo.as_ref().and_then(|r|r.snapshots.iter().find(|s|s.reference==self.selected_snapshot)).cloned();
-            let Some(saved)=saved else{ui.heading("Select a snapshot");subtitle(ui,"Compare it, open an independent copy, or promote it to a branch.");ui.add_space(20.);badge(ui,"Local to this repository",SNAPSHOT());return;};
+            let Some(saved)=saved else{ui.heading("Select a snapshot");subtitle(ui,"Compare it, open an independent copy, or promote it to a branch.");ui.add_space(20.);badge(ui,"Local to this repository",CHECKPOINT());return;};
             ui.label(RichText::new(&saved.label).size(19.).strong());subtitle(ui,&saved.date);ui.add_space(18.);
             if ui.button("Inspect patch").clicked(){self.detail_title=format!("Snapshot · {}",saved.label);self.read("git",process::strings(&["show","--stat","--patch",&saved.id]),ctx);}
             if ui.button("Compare with working tree").clicked(){self.detail_title="Snapshot → working tree".into();self.read("git",process::strings(&["diff",&saved.reference,"--"]),ctx);}

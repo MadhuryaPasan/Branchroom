@@ -23,15 +23,28 @@ pub enum PullRequestFilter {
     Open,
     Mine,
     ReviewRequested,
+    Closed,
 }
 pub fn pull_requests(root: &Path, filter: PullRequestFilter) -> Result<Vec<PullRequest>> {
-    let mut args = process::strings(&["pr", "list", "--state", "open", "--limit", "100"]);
+    let mut args = process::strings(&[
+        "pr",
+        "list",
+        "--state",
+        if matches!(filter, PullRequestFilter::Closed) {
+            "closed"
+        } else {
+            "open"
+        },
+        "--limit",
+        "100",
+    ]);
     match filter {
         PullRequestFilter::Open => {}
         PullRequestFilter::Mine => args.extend(process::strings(&["--author", "@me"])),
         PullRequestFilter::ReviewRequested => {
             args.extend(process::strings(&["--search", "review-requested:@me"]))
         }
+        PullRequestFilter::Closed => {}
     }
     args.extend(process::strings(&[
         "--json",

@@ -11,27 +11,51 @@ pub(super) struct Inspector {
     receiver: Option<Receiver<(String, Result<Details>)>>,
     cache: std::collections::HashMap<String, Result<Details>>,
     pub expanded: bool,
+    merge_parent: usize,
 }
 pub(super) fn files(root: &std::path::Path, id: &str) -> Result<Vec<CommitFile>> {
-    git::git(
-        root,
-        &[
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "--numstat",
-            "--no-renames",
-            "--diff-merges=first-parent",
-            "-r",
-            "-z",
-            id,
-        ],
-    )
-    .map(|out| CommitFile::parse(&out))
+    files_for_parent(root, id, 0)
+}
+
+fn files_for_parent(root: &std::path::Path, id: &str, parent: usize) -> Result<Vec<CommitFile>> {
+    let output = if parent == 0 {
+        git::git(
+            root,
+            &[
+                "diff-tree",
+                "--root",
+                "--no-commit-id",
+                "--numstat",
+                "--no-renames",
+                "--diff-merges=first-parent",
+                "-r",
+                "-z",
+                id,
+            ],
+        )?
+    } else {
+        git::git(
+            root,
+            &[
+                "diff",
+                "--numstat",
+                "--no-renames",
+                "-z",
+                &format!("{id}^{parent}"),
+                id,
+            ],
+        )?
+    };
+    Ok(CommitFile::parse(&output))
 }
 impl Branchroom {
     fn inspector_data(&mut self, ctx: &egui::Context) -> Option<Result<Details>> {
-        let key = format!("{}:{}", self.path().display(), self.selected_commit);
+        let key = format!(
+            "{}:{}:{}",
+            self.path().display(),
+            self.selected_commit,
+            self.inspector.merge_parent
+        );
         if self.inspector.key != key {
             self.inspector.key = key.clone();
             self.inspector.revision += 1;
@@ -65,10 +89,16 @@ impl Branchroom {
         {
             let (tx, rx) = mpsc::channel();
             self.inspector.receiver = Some(rx);
-            let (root, id, ctx) = (self.path(), self.selected_commit.clone(), ctx.clone());
+            let (root, id, ctx, parent) = (
+                self.path(),
+                self.selected_commit.clone(),
+                ctx.clone(),
+                self.inspector.merge_parent,
+            );
             std::thread::spawn(move || {
                 let result = git::commit_details(&root, &id).and_then(|commit| {
-                    files(&root, &commit.id).map(|files| Details { commit, files })
+                    files_for_parent(&root, &commit.id, parent)
+                        .map(|files| Details { commit, files })
                 });
                 let _ = tx.send((key, result));
                 ctx.request_repaint();
@@ -133,9 +163,14 @@ impl Branchroom {
             self.commit_actions(ui, ctx, &commit);
         });
         ui.add_space(SPACE[1]);
+        let body_max_height = ui
+            .available_height()
+            .min(ui.ctx().content_rect().height())
+            .max(240.);
         egui::ScrollArea::vertical()
             .id_salt(("commit_details", self.inspector.revision))
             .auto_shrink([false, false])
+            .max_height(body_max_height)
             .show(ui, |ui| {
                 ui.add(
                     egui::Label::new(RichText::new(&commit.subject).size(18.).strong())
@@ -158,6 +193,28 @@ impl Branchroom {
                 }
                 ui.add_space(SPACE[3]);
                 section(ui, "Changed files");
+                if commit.parents.len() > 1 {
+                    let mut parent = self.inspector.merge_parent;
+                    egui::ComboBox::from_id_salt(("merge_parent", commit.id.clone()))
+                        .selected_text(if parent == 0 {
+                            "First parent"
+                        } else {
+                            "Selected parent"
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut parent, 0, "First parent");
+                            for index in 1..=commit.parents.len() {
+                                ui.selectable_value(&mut parent, index, format!("Parent {index}"));
+                            }
+                        });
+                    if parent != self.inspector.merge_parent {
+                        self.inspector.merge_parent = parent;
+                        self.inspector.cache.remove(&self.inspector.key);
+                        self.inspector.receiver = None;
+                        self.inspector.revision += 1;
+                    }
+                    subtitle(ui, "Changed files are compared with the selected parent.");
+                }
                 let loaded = if let Some(Ok(details)) = &data {
                     Some(details.files.clone())
                 } else if self.commit_files_for == commit.id {
@@ -174,30 +231,69 @@ impl Branchroom {
                     if files.is_empty() {
                         subtitle(ui, "No changed files in this commit");
                     }
-                    for file in files {
-                        if ui
-                            .add(
-                                egui::Button::selectable(
-                                    self.selected_path == file.path,
-                                    file.label(),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text(&file.path)
-                            .clicked()
-                        {
-                            self.detail_title = format!("{} · {}", short(&commit.id), file.path);
-                            let mut args = process::strings(&[
-                                "show",
-                                "--format=",
-                                "--first-parent",
-                                &commit.id,
-                                "--",
-                            ]);
-                            self.selected_path = file.path.clone();
-                            args.push(file.path);
-                            self.read("git", args, ctx);
-                        }
+                    let row_height = 34.;
+                    let max_height = ui.available_height().max(240.);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("commit_changed_files", &commit.id))
+                        .auto_shrink([false, false])
+                        .max_height(max_height)
+                        .show_rows(ui, row_height, files.len(), |ui, range| {
+                            for index in range {
+                                let file = &files[index];
+                                let response = ui
+                                    .with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.add_sized(
+                                                [ui.available_width(), row_height],
+                                                egui::Button::selectable(
+                                                    self.selected_path == file.path,
+                                                    file.label(),
+                                                )
+                                                .truncate(),
+                                            )
+                                        },
+                                    )
+                                    .inner
+                                    .on_hover_text(&file.path);
+                                if response.clicked() {
+                                    self.detail_title =
+                                        format!("{} · {}", short(&commit.id), file.path);
+                                    let mut args = process::strings(&[
+                                        "show",
+                                        "--format=",
+                                        "--first-parent",
+                                        &commit.id,
+                                        "--",
+                                    ]);
+                                    self.selected_path = file.path.clone();
+                                    args.push(file.path.clone());
+                                    self.read("git", args, ctx);
+                                }
+                            }
+                        });
+                    if self.detail_open
+                        && self.detail_page == Page::History
+                        && !self.detail.is_empty()
+                    {
+                        ui.add_space(SPACE[2]);
+                        ui.horizontal_wrapped(|ui| {
+                            section(ui, "Visual diff");
+                            if ui
+                                .button(if self.patch_raw {
+                                    "Show formatted diff"
+                                } else {
+                                    "Show raw patch"
+                                })
+                                .clicked()
+                            {
+                                self.patch_raw = !self.patch_raw;
+                            }
+                            if ui.button("Copy patch").clicked() {
+                                ui.ctx().copy_text(self.detail.clone());
+                            }
+                        });
+                        patch_preview::show(ui, &self.detail, self.patch_raw);
                     }
                 } else if let Some(Err(error)) = &data {
                     ui.colored_label(DANGER(), "Could not load changed files");

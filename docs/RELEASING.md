@@ -135,13 +135,13 @@ You do not need to click **Draft a new release**. The workflow creates the relea
 
 | System | Download |
 | --- | --- |
-| Windows | The Branchroom `.zip` package. Extract it, then run `branchroom.exe` inside. A standalone `.exe` is also provided. |
+| Windows | The `Branchroom-...-Windows-x64-Setup.exe` installer. It creates Start menu and optional desktop shortcuts. The complete `.zip` package is also provided for portable use. |
 | Linux | The `.tar.gz` asset with `Linux` in its name. Extract it to get the executable. |
 | macOS | The `.tar.gz` asset with `macOS` in its name. Extract it to get the executable. |
 
-Linux and macOS archives are built for the architecture of their GitHub runner; they are not universal packages. These builds are unsigned and do not include an installer. On Windows, Git must be installed separately. GitHub CLI is needed for GitHub features.
+Linux and macOS archives are built for the architecture of their GitHub runner; they are not universal packages. These builds are unsigned and do not include an installer. The Windows installer is also unsigned, and Git must be installed separately. GitHub CLI is needed for GitHub features.
 
-The automatically generated **Source code** downloads contain source files, not a ready-to-run application. `latest.json` is build metadata; it is not an installer.
+The automatically generated **Source code** downloads contain source files, not a ready-to-run application. `latest.json` is build metadata and includes the installer filename; it is not an installer.
 
 ### Download a build without publishing a release
 
@@ -149,7 +149,7 @@ The automatically generated **Source code** downloads contain source files, not 
 2. Open **Actions > Build and test** and select the successful run.
 3. Scroll to **Artifacts**.
 4. Download `branchroom-Windows`, `branchroom-Linux`, or `branchroom-macOS`.
-5. Extract the downloaded artifact. For Windows, extract the packaged ZIP inside it to use the complete package.
+5. Extract the downloaded artifact. On Windows, run the `*-Setup.exe` installer or extract the packaged ZIP for portable use.
 
 You may need to sign in to GitHub to download workflow artifacts.
 

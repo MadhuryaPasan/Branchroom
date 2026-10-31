@@ -167,6 +167,13 @@ impl Branchroom {
                         badge(ui, &repo.branch, ACCENT());
                         ui.label(RichText::new("Checked-out branch").size(12.).color(MUTED())).on_hover_text("All loaded branches share this graph. Select a branch label to inspect its tip.");
                     }
+                    if ctx.content_rect().width() >= 1050. {
+                        ui.separator();
+                        badge(ui, "Working copy", WORKING_COPY());
+                        badge(ui, "Checkpoint", CHECKPOINT());
+                        badge(ui, "Pull request", PULL_REQUEST());
+                        badge(ui, "Remote", REMOTE());
+                    }
                     }
                     ui.menu_button("View", |ui| {
                         if ctx.content_rect().height()<500. {
@@ -224,7 +231,7 @@ impl Branchroom {
                 });
             });
         }
-        self.patch_drawer(ui, true);
+        self.patch_drawer(ui, false);
         macro_rules! history_content {
             ($content_ui:expr) => {{
                 egui::Frame::new()
@@ -241,7 +248,7 @@ impl Branchroom {
                             let point = |a: f32| rect.center() + egui::vec2(a.cos(), a.sin()) * 7.;
                             ui.painter().line_segment(
                                 [point(angle), point(angle + 0.45)],
-                                egui::Stroke::new(1.5, MUTED()),
+                                egui::Stroke::new(1.5, WORKING_COPY()),
                             );
                         }
                         let source = ui.add(
@@ -265,53 +272,6 @@ impl Branchroom {
                     });
                 });
                 self.graph_drop(ui, &working.response, manipulation::Target::Working);
-                }
-                if ui.available_height()>280. {
-                egui::ScrollArea::horizontal()
-                    .id_salt("history_branch_worktrees")
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            for branch in repo.branches.iter().filter(|b| !b.remote) {
-                                let lane = repo
-                                    .commits
-                                    .iter()
-                                    .position(|c| c.id == branch.id)
-                                    .and_then(|i| self.graph.get(i))
-                                    .map(|r| r.lane);
-                                if let Some(lane) = lane {
-                                    let selected = self.selected_commit == branch.id;
-                                    let response = ui.add(
-                                        egui::Button::selectable(
-                                            selected,
-                                            RichText::new(&branch.name).color(lane_color(lane)),
-                                        )
-                                        .sense(egui::Sense::click_and_drag()),
-                                    ).on_hover_text(format!(
-                                        "Branch tip: {} · select to inspect its latest commit; drag to preview a branch action",
-                                        branch.name
-                                    ));
-                                    response.dnd_set_drag_payload(manipulation::Payload::Branch {
-                                        name: branch.name.clone(),
-                                        current: branch.current,
-                                        reference: format!("refs/heads/{}", branch.name),
-                                    });
-                                    self.graph_drop(
-                                        ui,
-                                        &response,
-                                        manipulation::Target::Branch(&format!(
-                                            "refs/heads/{}",
-                                            branch.name
-                                        )),
-                                    );
-                                    if response.clicked() {
-                                        self.selected_commit = branch.id.clone();
-                                        self.inspector_open = true;
-                                    }
-                                }
-                            }
-                        });
-                    });
                 }
                 let commits = &repo.commits;
                 let visible = self.history_view.visible(&repo, &self.query);
@@ -350,7 +310,7 @@ impl Branchroom {
                     let graph_width = if self.history_list {
                         24.
                     } else if columns.graph > 0. {
-                        columns.graph.clamp(72., 4096.)
+                        columns.graph.clamp(72., 4096.).max(required_graph)
                     } else {
                         required_graph
                     };
@@ -369,7 +329,55 @@ impl Branchroom {
                     let widths = [graph_width, commit_width, author_width, date_width];
                     self.history_view.resolved_widths = widths;
                     let table_width = widths.iter().sum::<f32>();
-                    let row_height = if ctx.content_rect().height()<500.{32.}else{[36., 48., 60.][self.density.min(2)] * self.graph_zoom};
+                    let row_height = if ctx.content_rect().height()<500.{32.}else{[40., 46., 54.][self.density.min(2)] * self.graph_zoom};
+                    if !self.history_list {
+                        let branches = repo
+                            .branches
+                            .iter()
+                            .filter(|branch| !branch.remote)
+                            .collect::<Vec<_>>();
+                        if !branches.is_empty() {
+                            egui::ScrollArea::horizontal()
+                                .id_salt("history_branch_strip")
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    let branch_width = branches
+                                        .iter()
+                                        .map(|branch| {
+                                            (branch.name.chars().count() as f32 * 7. + 42.).max(96.)
+                                        })
+                                        .sum::<f32>();
+                                    ui.set_min_width(branch_width);
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new("Branches").size(TEXT_SMALL).color(MUTED()));
+                                        for branch in &branches {
+                                            let response = ui.add(egui::Button::selectable(
+                                                self.selected_commit == branch.id,
+                                                RichText::new(&branch.name).size(11.),
+                                            ));
+                                            response.dnd_set_drag_payload(
+                                                manipulation::Payload::Branch {
+                                                    name: branch.name.clone(),
+                                                    current: branch.current,
+                                                    reference: format!("refs/heads/{}", branch.name),
+                                                },
+                                            );
+                                            let branch_ref = format!("refs/heads/{}", branch.name);
+                                            self.graph_drop(
+                                                ui,
+                                                &response,
+                                                manipulation::Target::Branch(&branch_ref),
+                                            );
+                                            if response.clicked() {
+                                                self.selected_commit = branch.id.clone();
+                                                self.inspector_open = true;
+                                            }
+                                        }
+                                    });
+                                });
+                            ui.add_space(4.);
+                        }
+                    }
                     egui::ScrollArea::horizontal()
                         .scroll_source(egui::scroll_area::ScrollSource {
                             drag: egui::scroll_area::DragScroll::Always,
@@ -380,7 +388,7 @@ impl Branchroom {
                         .show(ui, |ui| {
                             ui.set_min_width(table_width);
                             let (header, _) = ui.allocate_exact_size(
-                                egui::vec2(table_width, if ctx.content_rect().height()<500.{0.}else{32.}),
+                                egui::vec2(table_width, if ctx.content_rect().height()<500.{24.}else{32.}),
                                 egui::Sense::hover(),
                             );
                             ui.painter().rect_filled(header, 0., SURFACE());
@@ -632,21 +640,22 @@ impl Branchroom {
                                         let start = rect.left() + widths[0] + 10.;
                                         let commit_end = rect.left() + widths[0] + widths[1];
                                         let author_end = commit_end + widths[2];
+                                        let mut inline_title = commit.subject.clone();
+                                        if !decorations.is_empty() {
+                                            inline_title.push_str("  ·  ");
+                                            inline_title.push_str(&decorations);
+                                        }
+                                        if let Some((number, _, _, _, state, _, _)) = linked_prs.first() {
+                                            inline_title.push_str(&format!("  ·  PR #{number} {state}"));
+                                        }
                                         let title_rect = egui::Rect::from_min_max(
                                             egui::pos2(start, rect.top()),
                                             egui::pos2(
                                                 commit_end - 10.,
-                                                rect.bottom()
-                                                    - if !decorations.is_empty()
-                                                        && row_height >= 48.
-                                                    {
-                                                        14.
-                                                    } else {
-                                                        0.
-                                                    },
+                                                rect.bottom(),
                                             ),
                                         );
-                                        text_at(ui, title_rect, &commit.subject, 14., INK(), false);
+                                        text_at(ui, title_rect, &inline_title, 14., INK(), false);
                                         if show_author {
                                             let center =
                                                 egui::pos2(commit_end + 18., rect.center().y);
@@ -681,28 +690,8 @@ impl Branchroom {
                                             MUTED(),
                                             false,
                                         );
-                                        if !decorations.is_empty() && row_height >= 48. {
-                                            let label = decorations;
-                                            let ref_width = (label.chars().count() as f32 * 6.5
-                                                + 12.)
-                                                .min((commit_end - start - 10.).max(0.));
-                                            let badge_rect = egui::Rect::from_min_size(
-                                                egui::pos2(start, rect.bottom() - 17.),
-                                                egui::vec2(ref_width, 15.),
-                                            );
-                                            ui.painter().rect_filled(badge_rect, 3., SELECTED());
-                                            text_at(
-                                                ui,
-                                                badge_rect.shrink2(egui::vec2(5., 0.)),
-                                                &label,
-                                                11.,
-                                                ACCENT(),
-                                                false,
-                                            );
-                                        }
                                         if let Some((number, title, head, base, state, ci, url)) =
                                             linked_prs.first()
-                                            && row_height >= 48.
                                         {
                                             let label = format!(
                                                 "PR #{} · {}",
@@ -800,15 +789,7 @@ impl Branchroom {
 
         let bounds = ui.available_rect_before_wrap();
         ui.allocate_rect(bounds, egui::Sense::hover());
-        let show_patch = self.detail_open
-            && self.detail_page == self.page
-            && bounds.width() >= 1000.
-            && bounds.height() >= 480.;
-        let patch_height = if show_patch {
-            (bounds.height() * 0.28).clamp(150., 240.)
-        } else {
-            0.
-        };
+        let patch_height = 0.;
         let workspace = egui::Rect::from_min_max(
             bounds.min,
             egui::pos2(bounds.right(), bounds.bottom() - patch_height),
@@ -816,7 +797,7 @@ impl Branchroom {
         let wide = workspace.width() >= 840.;
         let mut graph_rect = workspace;
         let mut inspector_rect = None;
-        if self.inspector_open {
+        if self.inspector_open && ctx.content_rect().width() < 1100. {
             if self.inspector.expanded {
                 inspector_rect = Some(workspace);
                 graph_rect.max.y = graph_rect.min.y;
@@ -919,47 +900,6 @@ impl Branchroom {
                         self.commit_inspector(ui, ctx);
                     }
                 });
-        }
-        if show_patch {
-            let patch =
-                egui::Rect::from_min_max(egui::pos2(bounds.left(), workspace.bottom()), bounds.max);
-            let mut patch_ui = theme::bounded_pane(ui, patch, "history_patch");
-            egui::Frame::new()
-                .fill(SURFACE())
-                .inner_margin(12)
-                .show(&mut patch_ui, |ui| self.patch_preview_content(ui, true));
-        }
-    }
-
-    pub(super) fn graph_inspector(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.inspector_open {
-            if ui.available_width() >= 800. {
-                egui::Panel::right("commit_inspector")
-                    .default_size(340.)
-                    .min_size(280.)
-                    .max_size(480.)
-                    .resizable(true)
-                    .frame(egui::Frame::new().fill(SURFACE()).inner_margin(12))
-                    .show(ui, |ui| {
-                        self.commit_inspector(ui, ctx);
-                    });
-            } else {
-                egui::Panel::bottom("commit_inspector_compact")
-                    .exact_size(36.)
-                    .resizable(false)
-                    .frame(egui::Frame::new().fill(SURFACE()).inner_margin(4))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().button_padding.y = 4.;
-                        ui.spacing_mut().interact_size.y = 24.;
-                        ui.horizontal(|ui| {
-                            section(ui, "Commit details");
-                            if ui.button("Expand details").clicked() {
-                                self.page = Page::History;
-                                self.inspector.expanded = true;
-                            }
-                        });
-                    });
-            }
         }
     }
 

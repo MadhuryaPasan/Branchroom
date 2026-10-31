@@ -699,15 +699,32 @@ impl Branchroom {
                         ui.horizontal_wrapped(|ui| {
                             badge(
                                 ui,
-                                &format!("{} predicted {}", review.conflicts.len(),if review.conflicts.len()==1{"conflict"}else{"conflicts"}),
+                                &format!(
+                                    "{} {} in preview",
+                                    review.conflicts.len(),
+                                    if review.conflicts.len() == 1 {
+                                        "conflict"
+                                    } else {
+                                        "conflicts"
+                                    }
+                                ),
                                 if review.conflicts.is_empty() {
-                                    SUCCESS()
+                                    SAFE()
                                 } else {
-                                    DANGER()
+                                    CONFLICT()
                                 },
                             );
-                            ui.label(format!("{} commits introduced", review.introduced));
-                            subtitle(ui, "A safety point is saved before applying");
+                            ui.label(format!(
+                                "{} {}",
+                                review.introduced,
+                                if review.introduced == 1 {
+                                    "commit added"
+                                } else {
+                                    "commits added"
+                                }
+                            ));
+                            badge(ui, "Checkpoint before apply", CHECKPOINT());
+                            subtitle(ui, "Your files stay unchanged until you confirm");
                         });
                         for file in &review.conflicts {
                             ui.colored_label(DANGER(), file);

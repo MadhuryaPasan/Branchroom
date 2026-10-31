@@ -3,6 +3,7 @@ use super::*;
 #[derive(Default)]
 pub(super) struct ComparisonView {
     pub(super) advanced: bool,
+    selected_commit: String,
     repository: std::path::PathBuf,
     key: String,
     receiver: Option<Receiver<Result<Comparison>>>,
@@ -56,6 +57,10 @@ impl Branchroom {
             self.compare_base,
             self.compare_head
         );
+        if self.comparison.key != key {
+            self.comparison.selected_commit.clear();
+            self.selected_commit.clear();
+        }
         if let Some(rx) = &self.comparison.receiver
             && let Ok(result) = rx.try_recv()
         {
@@ -63,7 +68,7 @@ impl Branchroom {
             self.comparison.receiver = None;
         }
         if self.comparison.key != key && self.comparison.receiver.is_none() {
-            self.comparison.key = key;
+            self.comparison.key = key.clone();
             self.comparison.data = None;
             if self.preview_mode {
                 let resolve = |name: &str| {
@@ -105,7 +110,18 @@ impl Branchroom {
                         .filter(|c| !left_ids.contains(c.id.as_str()))
                         .map(|c| (c.id.clone(), c.subject.clone()))
                         .collect(),
-                    files: vec![],
+                    files: vec![
+                        CommitFile {
+                            path: "src/cache.rs".into(),
+                            added: "12".into(),
+                            removed: "4".into(),
+                        },
+                        CommitFile {
+                            path: "docs/offline.md".into(),
+                            added: "6".into(),
+                            removed: "1".into(),
+                        },
+                    ],
                 }));
             } else {
                 let (tx, rx) = mpsc::channel();
@@ -158,10 +174,14 @@ impl Branchroom {
                 });
             }
         }
-        self.graph_inspector(ui, ctx);
+        let w = ui.available_width();
+        ui.set_max_width(w);
+        ui.style_mut().spacing.scroll.floating = false;
         egui::ScrollArea::vertical()
-            .id_salt("comparison_workspace")
+            .id_salt(("comparison_workspace", &key))
+            .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
                 heading(
                     ui,
                     "Compare branches",
@@ -240,8 +260,16 @@ impl Branchroom {
                             format!("Compare with: {}", self.compare_head),
                         )
                     });
-                    ui.checkbox(&mut self.inspector_open, "Commit details");
+                    if ctx.content_rect().width() < 1100. {
+                        ui.toggle_value(&mut self.inspector_drawer_open, "Commit details drawer");
+                    } else {
+                        ui.checkbox(&mut self.inspector_open, "Commit details");
+                    }
                 });
+                if ctx.content_rect().width() < 1100. && self.inspector_drawer_open {
+                    surface().show(ui, |ui| self.commit_inspector(ui, ctx));
+                    ui.add_space(12.);
+                }
 
                 let mut selected = None;
                 let mut selected_file = None;
@@ -320,47 +348,136 @@ impl Branchroom {
                             });
                         });
                         ui.add_space(12.);
+                        let diagram_height = 126.;
+                        let (diagram, _) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width(), diagram_height),
+                            egui::Sense::hover(),
+                        );
+                        let center = diagram.center();
+                        let shared_end =
+                            egui::pos2(diagram.left() + diagram.width() * 0.32, center.y);
+                        let left_end = egui::pos2(
+                            diagram.left() + diagram.width() * 0.68,
+                            diagram.top() + 28.,
+                        );
+                        let right_end = egui::pos2(
+                            diagram.left() + diagram.width() * 0.68,
+                            diagram.bottom() - 28.,
+                        );
+                        let painter = ui.painter().with_clip_rect(diagram);
+                        painter.line_segment(
+                            [egui::pos2(diagram.left() + 24., center.y), shared_end],
+                            egui::Stroke::new(4., MUTED()),
+                        );
+                        painter
+                            .line_segment([shared_end, left_end], egui::Stroke::new(4., ACCENT()));
+                        painter.line_segment(
+                            [shared_end, right_end],
+                            egui::Stroke::new(4., SUCCESS()),
+                        );
+                        painter.circle_filled(shared_end, 7., MUTED());
+                        painter.circle_filled(left_end, 7., ACCENT());
+                        painter.circle_filled(right_end, 7., SUCCESS());
+                        painter.text(
+                            egui::pos2(diagram.left() + 24., center.y - 22.),
+                            egui::Align2::LEFT_CENTER,
+                            "Shared history",
+                            egui::FontId::proportional(12.),
+                            MUTED(),
+                        );
+                        for (point, text, color) in [
+                            (
+                                left_end,
+                                format!("{} commits in {}", data.left.len(), base_name),
+                                ACCENT(),
+                            ),
+                            (
+                                right_end,
+                                format!("{} commits in {}", data.right.len(), compare_name),
+                                SUCCESS(),
+                            ),
+                        ] {
+                            let clip = egui::Rect::from_min_max(
+                                egui::pos2(point.x + 10., point.y - 20.),
+                                egui::pos2(diagram.right() - 8., point.y + 20.),
+                            );
+                            let mut job = egui::text::LayoutJob::simple(
+                                text,
+                                egui::FontId::proportional(12.),
+                                color,
+                                clip.width(),
+                            );
+                            job.wrap.max_rows = 2;
+                            job.wrap.overflow_character = Some('…');
+                            let galley = painter.layout_job(job);
+                            painter
+                                .with_clip_rect(clip)
+                                .galley(clip.left_top(), galley, color);
+                        }
+                        if data.left.is_empty() && data.right.is_empty() {
+                            painter.text(
+                                center,
+                                egui::Align2::CENTER_CENTER,
+                                "These branches are identical",
+                                egui::FontId::proportional(14.),
+                                INK(),
+                            );
+                        }
 
                         let mut show_commit_list =
                             |ui: &mut egui::Ui, title: &str, commits: &[(String, String)]| {
                                 surface().show(ui, |ui| {
-                                    ui.horizontal_wrapped(|ui| {
-                                        ui.label(RichText::new(title).size(TEXT_SUBHEAD).strong());
+                                    let open = !commits.is_empty();
+                                    egui::CollapsingHeader::new(
+                                        RichText::new(title).size(TEXT_SUBHEAD).strong(),
+                                    )
+                                    .id_salt(("compare_commit_list", &key, title))
+                                    .default_open(open)
+                                    .show(ui, |ui| {
                                         badge(ui, &commits.len().to_string(), MUTED());
-                                    });
-                                    if commits.is_empty() {
-                                        subtitle(ui, "No commits unique to this branch.");
-                                    } else {
-                                        egui::ScrollArea::vertical()
-                                            .id_salt(("compare_commits", title))
-                                            .max_height(240.)
-                                            .show_rows(ui, 40., commits.len(), |ui, range| {
-                                                for i in range {
-                                                    let (id, subject) = &commits[i];
-                                                    let response = ui
-                                                        .add_sized(
-                                                            [ui.available_width(), 36.],
-                                                            egui::Button::selectable(
-                                                                self.selected_commit == *id,
-                                                                format!(
-                                                                    "{}  {}",
-                                                                    short(id),
-                                                                    subject
+                                        if commits.is_empty() {
+                                            subtitle(ui, "No commits unique to this branch.");
+                                        } else {
+                                            egui::ScrollArea::vertical()
+                                                .id_salt(("compare_commits", title))
+                                                .max_height(240.)
+                                                .show_rows(ui, 40., commits.len(), |ui, range| {
+                                                    for i in range {
+                                                        let (id, subject) = &commits[i];
+                                                        let response = ui
+                                                            .with_layout(
+                                                                egui::Layout::left_to_right(
+                                                                    egui::Align::Center,
                                                                 ),
+                                                                |ui| {
+                                                                    ui.add_sized(
+                                                                        [ui.available_width(), 36.],
+                                                                        egui::Button::selectable(
+                                                                            self.selected_commit
+                                                                                == *id,
+                                                                            format!(
+                                                                                "{}  {}",
+                                                                                short(id),
+                                                                                subject
+                                                                            ),
+                                                                        )
+                                                                        .wrap(),
+                                                                    )
+                                                                },
                                                             )
-                                                            .wrap(),
-                                                        )
-                                                        .on_hover_text(id);
-                                                    if response.clicked() {
-                                                        selected = Some(id.clone());
+                                                            .inner
+                                                            .on_hover_text(id);
+                                                        if response.clicked() {
+                                                            selected = Some(id.clone());
+                                                        }
                                                     }
-                                                }
-                                            });
-                                    }
+                                                });
+                                        }
+                                    });
                                 });
                             };
                         let available_width = ui.available_width();
-                        if available_width >= 720. {
+                        if available_width >= 900. {
                             ui.columns(2, |columns| {
                                 show_commit_list(
                                     &mut columns[0],
@@ -399,21 +516,32 @@ impl Branchroom {
                                     },
                                 );
                             } else {
+                                let row_height = 34.;
+                                let max_height = ui.available_height().max(240.);
                                 egui::ScrollArea::vertical()
-                                    .id_salt("comparison_files")
-                                    .max_height(260.)
-                                    .show_rows(ui, 34., data.files.len(), |ui, range| {
-                                        for i in range {
-                                            let file = &data.files[i];
+                                    .id_salt("compare_changed_files")
+                                    .auto_shrink([false, false])
+                                    .max_height(max_height)
+                                    .show_rows(ui, row_height, data.files.len(), |ui, range| {
+                                        for index in range {
+                                            let file = &data.files[index];
                                             let response = ui
-                                                .add_sized(
-                                                    [ui.available_width(), 30.],
-                                                    egui::Button::selectable(
-                                                        self.selected_path == file.path,
-                                                        file.label(),
-                                                    )
-                                                    .truncate(),
+                                                .with_layout(
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.add_sized(
+                                                            [ui.available_width(), row_height],
+                                                            egui::Button::selectable(
+                                                                self.selected_path == file.path,
+                                                                file.label(),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                    },
                                                 )
+                                                .inner
                                                 .on_hover_text(&file.path);
                                             if response.clicked() {
                                                 self.selected_path = file.path.clone();
@@ -426,8 +554,13 @@ impl Branchroom {
                     }
                 }
                 if let Some(id) = selected {
+                    self.comparison.selected_commit = id.clone();
                     self.selected_commit = id;
-                    self.inspector_open = true;
+                    if ctx.content_rect().width() < 1100. {
+                        self.inspector_drawer_open = true;
+                    } else {
+                        self.inspector_open = true;
+                    }
                 }
                 if let Some(path) = selected_file {
                     let args = process::strings(&[

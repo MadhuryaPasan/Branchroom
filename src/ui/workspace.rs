@@ -153,10 +153,10 @@ fn branch_card(
         4.,
         egui::Stroke::new(1.5, color),
     );
-    for (text, y, size, text_color, reserve) in [
-        (title, 10., 14., INK(), 125.),
-        (status, 34., 12., color, 12.),
-        (location, 57., 12., MUTED(), 125.),
+    for (text, y, size, text_color, reserve, max_rows) in [
+        (title, 10., 14., INK(), 160., 2),
+        (status, 36., 12., color, 160., 2),
+        (location, 62., 12., MUTED(), 160., 2),
     ] {
         let clip = egui::Rect::from_min_max(
             rect.min + egui::vec2(31., y),
@@ -171,7 +171,7 @@ fn branch_card(
             text_color,
             clip.width(),
         );
-        job.wrap.max_rows = 1;
+        job.wrap.max_rows = max_rows;
         job.wrap.overflow_character = Some('…');
         let galley = ui.painter().layout_job(job);
         ui.painter()
@@ -209,8 +209,6 @@ impl Branchroom {
                 ui.add_space(5.);subtitle(ui,"Each card brings a branch on this computer and its linked remote together. Remote information is from the last fetch.");
             }
         });
-        self.patch_drawer(ui, false);
-        self.graph_inspector(ui, ctx);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{ui.label("Filter branches");ui.add(egui::TextEdit::singleline(&mut self.branch_filter).desired_width(220.).hint_text("feature/search"));if !self.branch_filter.is_empty()&&ui.button("Clear").clicked(){self.branch_filter.clear();}
                 ui.menu_button("Tree layout",|ui|{
@@ -236,7 +234,7 @@ impl Branchroom {
                 if divider.drag_stopped()&&!self.preview_mode&&let Err(error)=self.settings.save(){self.report(Err(error));}
                 let mut group_top=36.;
                 for (ancestor,branches) in groups {
-                    let group_height=branches.len() as f32*108.;let width=canvas_width;
+                    let group_height=branches.len() as f32*140.;let width=canvas_width;
                     let rect=egui::Rect::from_min_size(canvas.min+egui::vec2(0.,group_top),egui::vec2(width,group_height+22.));
                     group_top+=group_height+22.;
                     let source=egui::Rect::from_min_size(rect.min+egui::vec2(0.,group_height/2.-36.),egui::vec2(source_width,72.));
@@ -248,7 +246,7 @@ impl Branchroom {
                     ui.painter().text(source.min+egui::vec2(14.,37.),egui::Align2::LEFT_TOP,if ancestor.is_empty(){"No common commit"}else{"View source details"},egui::FontId::monospace(12.),ACCENT());
                     for (index,branch) in branches.iter().enumerate(){
                         let branch_ref=format!("refs/{}/{}",if branch.remote{"remotes"}else{"heads"},branch.name);
-                        let card=egui::Rect::from_min_size(rect.min+egui::vec2(child_x,index as f32*108.),egui::vec2((width-child_x-15.).min(720.),88.));
+                        let card=egui::Rect::from_min_size(rect.min+egui::vec2(child_x,index as f32*140.),egui::vec2((width-child_x-15.).min(720.),128.));
                         let remote = repo.branches.iter().find(|b| b.remote && b.name == branch.upstream);
                         let (status, mut location, color) = branch_explanation(branch, remote, repo.sync_counts);
                         if let Some(risk)=self.conflict_risk(&branch_ref,&format!("refs/heads/{}",repo.branch)).or_else(||self.conflict_risk(&format!("refs/heads/{}",repo.branch),&branch_ref)){location.push_str(&format!(" - Forecast: {risk} conflicts against {}",repo.branch));}
@@ -257,6 +255,11 @@ impl Branchroom {
                             let lane=repo.commits.iter().position(|c|c.id==branch.id).and_then(|i|self.graph.get(i)).map(|r|r.lane).unwrap_or(index);
                             let risk=self.conflict_risk(&branch_ref,&format!("refs/heads/{}",repo.branch)).or_else(||self.conflict_risk(&format!("refs/heads/{}",repo.branch),&branch_ref));
                             super::experiments::connect(ui,source,card,risk.map(|n|if n==0{SUCCESS()}else{DANGER()}).unwrap_or_else(||lane_color(lane)));
+                            ui.painter().circle_filled(
+                                egui::pos2(source.right(), source.center().y),
+                                5.,
+                                lane_color(lane),
+                            );
                         }
                         if !branch.current&&!branch.remote&&branch.ahead==0&&branch.name!=repo.base { location.push_str(" - Merged into comparison branch"); }
                         if let Some(commit)=repo.commits.iter().find(|c|c.id==branch.id) {
@@ -265,11 +268,36 @@ impl Branchroom {
                         }
                         let name=format!("{}{}",branch.name,if branch.current{"  · current"}else{""});
                         let response=branch_card(ui,card,&name,&status,&location,self.selected_commit==branch.id||(self.cleanup_branches&&!branch.current&&!branch.remote&&branch.ahead==0),color);
+                        let sync_label = match (branch.ahead, branch.behind) {
+                            (0, 0) => "In sync",
+                            (_, 0) => "Ahead",
+                            (0, _) => "Behind",
+                            _ => "Diverged",
+                        };
+                        let badge_rect = egui::Rect::from_min_size(
+                            egui::pos2(card.right() - 112., card.bottom() - 32.),
+                            egui::vec2(88., 18.),
+                        );
+                        ui.painter().rect_filled(badge_rect, 4., color.gamma_multiply(0.18));
+                        ui.painter().text(
+                            badge_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            sync_label,
+                            egui::FontId::proportional(10.),
+                            color,
+                        );
+                        ui.painter().text(
+                            egui::pos2(card.left() + 32., card.bottom() - 14.),
+                            egui::Align2::LEFT_CENTER,
+                            format!("^ {}   v {}", branch.ahead, branch.behind),
+                            egui::FontId::monospace(10.),
+                            MUTED(),
+                        );
                         response.dnd_set_drag_payload(manipulation::Payload::Branch{name:branch.name.clone(),current:branch.current,reference:branch_ref.clone()});
                         self.graph_drop(ui,&response,manipulation::Target::Branch(&branch_ref));
                         if let Some(workspace) = repo.workspaces.iter().find(|workspace| workspace.branch == branch.name) {
                             let desk_name = workspace.path.file_name().unwrap_or(workspace.path.as_os_str()).to_string_lossy();
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-245.,card.top()+8.),egui::vec2(120.,32.))),|ui| {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-252.,card.top()+46.),egui::vec2(120.,32.))),|ui| {
                                 let open = ui.button("Open folder").on_hover_text(format!(
                                     "Open this branch's separate Git worktree in its IDE: {} ({desk_name})",
                                     workspace.path.display()
@@ -288,7 +316,7 @@ impl Branchroom {
                         let main=repo.default_branch.as_ref().and_then(|name|repo.branches.iter().find(|b|b.remote&&b.name==format!("origin/{name}")).or_else(||repo.branches.iter().find(|b|!b.remote&&b.name==*name)));
                         let source=main.map(|b|format!("refs/{}/{}",if b.remote{"remotes"}else{"heads"},b.name)).unwrap_or_else(||repo.base.clone());
                         if !branch.remote&&main.is_none_or(|b|b.id!=branch.id) {
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-128.,card.top()+48.),egui::vec2(118.,28.))),|ui| {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-252.,card.top()+84.),egui::vec2(120.,28.))),|ui| {
                                 if ui.button("Update branch").on_hover_text(format!("Preview updating {} from the default branch",branch.name)).clicked(){self.begin_graph_action(branchroom::operation::Kind::Merge{source:source.clone(),target:format!("refs/heads/{}",branch.name)});}
                             });
                         }
@@ -298,7 +326,7 @@ impl Branchroom {
                         if branch.ahead>0 { ui.painter().rect_filled(egui::Rect::from_min_size(bar.min,egui::vec2(bar.width()*branch.ahead as f32/total,3.)),1.,SUCCESS()); }
                         if branch.behind>0 { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bar.right()-bar.width()*branch.behind as f32/total,bar.top()),egui::vec2(bar.width()*branch.behind as f32/total,3.)),1.,WARNING()); }
                         if response.on_hover_text(format!("{}\n{}\n{}",branch.name,status,location)).clicked(){self.selected_commit=branch.id.clone();self.inspector_open=true;}
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-116.,card.top()+8.),egui::vec2(105.,32.))),|ui|{
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-124.,card.top()+8.),egui::vec2(116.,32.))),|ui|{
                             let actions = ui.menu_button("Actions",|ui|{
                             ui.label(branchroom::collaboration::branch_status(branch,&repo.branches));
                             if ui.button("Open branch code in IDE…").clicked(){self.begin_review(&branch.id,None);ui.close();}

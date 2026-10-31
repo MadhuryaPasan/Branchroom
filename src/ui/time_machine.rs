@@ -28,7 +28,7 @@ impl Branchroom {
                 _ => "Combine commits",
             }
             .into(),
-            Task::Snapshot(label) => format!("Save safety point: {label}"),
+            Task::Snapshot(label) => format!("Save checkpoint: {label}"),
             Task::TimelineRestore(p) => p.label.clone(),
             Task::Shelved { action, .. } => format!(
                 "{} shelved work",
@@ -50,8 +50,8 @@ impl Branchroom {
                 args.first().map(String::as_str).unwrap_or("action")
             ),
             Task::Resolve { .. } => "Save conflict resolution".into(),
-            Task::RemoveSnapshot(_) => "Delete safety point".into(),
-            Task::RestoreSnapshot(_) => "Recover safety point".into(),
+            Task::RemoveSnapshot(_) => "Delete checkpoint".into(),
+            Task::RestoreSnapshot(_) => "Recover checkpoint".into(),
             Task::Promote { branch, .. } => format!("Create branch {branch}"),
             Task::Revert { .. } => "Revert commit".into(),
             _ => "Update repository".into(),
@@ -139,18 +139,9 @@ impl Branchroom {
             )
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Time Machine").size(TEXT_HEADER).strong());
+                    ui.label(RichText::new("Checkpoints").size(TEXT_HEADER).strong());
                     if ui
-                        .add_enabled(
-                            writable,
-                            egui::Button::new("Save safety point").fill(
-                                if self.time_machine.plan.is_some() {
-                                    SURFACE()
-                                } else {
-                                    PRIMARY()
-                                },
-                            ),
-                        )
+                        .add_enabled(writable, egui::Button::new("Save checkpoint…"))
                         .clicked()
                     {
                         self.capture_open = true;
@@ -175,15 +166,30 @@ impl Branchroom {
                 if !short {
                     subtitle(
                         ui,
-                        "Your actions, saved versions and recovered files in one timeline",
+                        "Save local checkpoints, compare ideas, and recover earlier work",
+                    );
+                    subtitle(
+                        ui,
+                        "Checkpoints stay on this computer. They are not an off-device backup, and ignored files are not included.",
                     );
                 }
                 ui.horizontal_wrapped(|ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.time_machine.filter)
-                            .desired_width(230.)
-                            .hint_text("Find an action, file or saved version"),
+                            .desired_width(180.)
+                            .hint_text("Find checkpoints"),
                     );
+                    for (label, value) in [
+                        ("Checkpoints", "Safety point"),
+                        ("Commits", "Commit"),
+                        ("Shelved", "Shelved work"),
+                        ("Discarded files", "Discarded file"),
+                    ] {
+                        let active = self.time_machine.filter == value;
+                        if ui.selectable_label(active, label).clicked() {
+                            self.time_machine.filter = if active { String::new() } else { value.into() };
+                        }
+                    }
                     if ui.button("Shelve work").clicked() {
                         self.form(
                             "Shelve work",
@@ -205,10 +211,11 @@ impl Branchroom {
             });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
             egui::ScrollArea::vertical().id_salt("action_timeline").show(ui,|ui|{
+                ui.set_min_width(ui.available_width());
                 if let Some(plan)=self.time_machine.plan.clone(){
                     surface().show(ui,|ui|{
                         ui.label(RichText::new("Preview restore").size(TEXT_HEADER).strong());ui.label(&plan.label);
-                        subtitle(ui,"A safety point is saved before restoring. Newer changes must still match this preview");
+                        subtitle(ui,"A checkpoint is saved before restoring. Newer changes must still match this preview");
                         ui.label(format!("{} → {}",plan.from.branch.as_deref().unwrap_or("Detached commit").trim_start_matches("refs/heads/"),plan.to.branch.as_deref().unwrap_or("Detached commit").trim_start_matches("refs/heads/")));
                         ui.label(&plan.summary);
                         section(ui,"Before restore");timeline_graph(ui,&plan.before_graph);
@@ -229,8 +236,8 @@ impl Branchroom {
                             if ui.add_enabled(!self.time_machine.loading&&!item.target.is_empty(),egui::Button::new("Compare")).clicked(){self.page=Page::Compare;self.compare_base=target.clone();self.compare_head="HEAD".into();self.comparison.advanced=false;}
                             if ui.add_enabled(writable&&!item.target.is_empty(),egui::Button::new("Branch from here…")).clicked(){self.form("Branch from here","Create a new branch at this saved version","git",&["branch"],&[("Branch name","")],&[&branch_target]);}
                             if item.kind!="Shelved work"&&ui.add_enabled(writable,egui::Button::new(RichText::new("Delete entry").color(DANGER()))).on_hover_text("Hide this entry while retaining its recovery data").clicked(){self.execute(Task::TimelineHide{id:item.key.clone(),hidden:true},ctx);}
-                            if item.kind=="Safety point"&&ui.add_enabled(writable,egui::Button::new(RichText::new("Delete safety point").color(DANGER()))).clicked(){self.pending=Some(Pending{title:"Delete safety point".into(),explanation:"Keep its data as a deleted safety point on this timeline so it can be recovered".into(),task:Task::RemoveSnapshot(item.reference.clone())});}
-                            if item.kind=="Deleted safety point"&&ui.add_enabled(writable,egui::Button::new("Recover safety point")).clicked(){self.execute(Task::RestoreSnapshot(item.reference.clone()),ctx);}
+                            if item.kind=="Safety point"&&ui.add_enabled(writable,egui::Button::new(RichText::new("Delete checkpoint").color(DANGER()))).clicked(){self.pending=Some(Pending{title:"Delete checkpoint".into(),explanation:"Keep its data as a deleted checkpoint on this timeline so it can be recovered".into(),task:Task::RemoveSnapshot(item.reference.clone())});}
+                            if item.kind=="Deleted safety point"&&ui.add_enabled(writable,egui::Button::new("Recover checkpoint")).clicked(){self.execute(Task::RestoreSnapshot(item.reference.clone()),ctx);}
                             if item.kind=="Discarded file"&&ui.add_enabled(writable,egui::Button::new("Recover file")).clicked(){self.pending=Some(Pending{title:"Recover file".into(),explanation:"Restore this saved file. The current working version is saved first".into(),task:Task::RestoreDiscard(item.reference.clone())});}
                         });
                         if item.kind=="Shelved work" {
@@ -247,18 +254,69 @@ impl Branchroom {
                 let query=self.time_machine.filter.to_lowercase();
                 let filtered=items.iter().filter(|item|format!("{} {} {}",item.label,item.kind,item.date).to_lowercase().contains(&query)).collect::<Vec<_>>();
                 if filtered.is_empty(){ui.label(RichText::new("Your next action starts the timeline").size(TEXT_HEADER).strong());subtitle(ui,"Save a safety point, commit changes, or shelve unfinished work. Existing saved versions stay available here");}
+                let mut best = true;
                 for item in filtered {
-                    ui.horizontal_top(|ui|{
-                        let (rect,_)=ui.allocate_exact_size(egui::vec2(20.,68.),egui::Sense::hover());
-                        ui.painter().line_segment([rect.center_top(),rect.center_bottom()],egui::Stroke::new(1.,LINE()));
-                        ui.painter().circle_filled(rect.center_top()+egui::vec2(0.,16.),4.,if item.key==self.time_machine.selected{ACCENT()}else{MUTED()});
-                        ui.vertical(|ui|{
-                            ui.set_min_width(ui.available_width().max(0.));
-                            let response=ui.add(egui::Button::selectable(item.key==self.time_machine.selected,RichText::new(&item.label).strong()).wrap());
-                            if response.clicked(){self.time_machine.selected=item.key.clone();self.time_machine.target.clear();self.time_machine.graph.clear();self.time_machine.patch.clear();self.time_machine.loading= !self.preview_mode;self.time_machine.plan=None;self.time_machine.before=false;self.selected_snapshot=item.reference.clone();self.execute(Task::TimelineLoad{item:item.clone(),before:false},ctx);}
-                            ui.add(egui::Label::new(RichText::new(format!("{} · {}",item.kind,item.date)).color(MUTED())).wrap());
+                    let selected_item = item.key == self.time_machine.selected;
+                    egui::Frame::new()
+                        .fill(if selected_item { SELECTED() } else { SURFACE() })
+                        .stroke(egui::Stroke::new(1., if selected_item { ACCENT() } else { LINE() }))
+                        .corner_radius(10)
+                        .inner_margin(12)
+                        .show(ui, |ui| {
+                            ui.horizontal_top(|ui| {
+                                let (line, _) = ui.allocate_exact_size(egui::vec2(12., 92.), egui::Sense::hover());
+                                ui.painter().line_segment([line.center_top(), line.center_bottom()], egui::Stroke::new(2., CHECKPOINT()));
+                                ui.painter().circle_filled(line.center_top() + egui::vec2(0., 18.), 5., CHECKPOINT());
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let response = ui.add(egui::Button::selectable(selected_item, RichText::new(&item.label).strong().size(16.)).wrap());
+                                        if response.clicked() {
+                                            self.time_machine.selected = item.key.clone();
+                                            self.time_machine.target.clear();
+                                            self.time_machine.graph.clear();
+                                            self.time_machine.patch.clear();
+                                            self.time_machine.loading = !self.preview_mode;
+                                            self.time_machine.plan = None;
+                                            self.time_machine.before = false;
+                                            self.selected_snapshot = item.reference.clone();
+                                            self.execute(Task::TimelineLoad { item: item.clone(), before: false }, ctx);
+                                        }
+                                        if best && item.kind == "Safety point" {
+                                            ui.label(RichText::new("Best checkpoint").color(WARNING()));
+                                            best = false;
+                                        }
+                                    });
+                                    ui.label(RichText::new(format!("{} · {}", item.kind, item.date)).color(MUTED()));
+                                    ui.add_space(6.);
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(if item.kind == "Safety point" { "Tracked files" } else { "Activity entry" }).color(MUTED()));
+                                        ui.add_space(4.);
+                                        ui.allocate_ui_with_layout(egui::vec2((ui.available_width() * 0.45).max(80.), 8.), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                            ui.painter().rect_filled(ui.min_rect(), 3., CHECKPOINT());
+                                        });
+                                    });
+                                    if selected_item {
+                                        ui.horizontal_wrapped(|ui| {
+                                            if ui.add_enabled(writable && !item.target.is_empty(), egui::Button::new("Compare with…")).clicked() {
+                                                self.page = Page::Compare;
+                                                self.compare_base = item.target.clone();
+                                                self.compare_head = "HEAD".into();
+                                            }
+                                            if ui.add_enabled(writable && !item.target.is_empty(), egui::Button::new("Try an idea from here")).clicked() {
+                                                self.form("Branch from checkpoint", "Create an experiment branch at this checkpoint.", "git", &["branch"], &[("Branch name", "")], &[&item.target]);
+                                            }
+                                            if ui.add_enabled(writable && !item.target.is_empty(), egui::Button::new("Restore preview")).clicked() {
+                                                self.execute(Task::TimelinePlan { item: item.clone(), before: false }, ctx);
+                                            }
+                                            if item.kind == "Safety point" && ui.add_enabled(writable, egui::Button::new("Archive")).clicked() {
+                                                self.execute(Task::TimelineHide { id: item.key.clone(), hidden: true }, ctx);
+                                            }
+                                        });
+                                    }
+                                });
+                            });
                         });
-                    });
+                    ui.add_space(10.);
                 }
                 if self.time_machine.advanced {
                     egui::CollapsingHeader::new("Open a saved version in a separate workspace").default_open(true).show(ui,|ui|self.snapshot_inspector(ui,ctx));

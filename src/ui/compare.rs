@@ -41,8 +41,8 @@ if index+1<self.reorder_ids.len()&&ui.small_button("Move later").clicked(){movem
                     if !self.reorder_ids.is_empty()&&ui.button("Review reordered history").clicked(){self.pending=Some(Pending{title:"Reorder local commits".into(),explanation:"Replay this oldest-to-newest order using a private index. If a conflict occurs or the final tree differs, your branch is left unchanged.".into(),task:Task::History(branchroom::history::Action::Reorder(self.reorder_ids.clone()))});}
                 });
             });ui.add_space(18.);
-            if ui.button("Open Time Machine").clicked(){self.page=Page::Snapshots;}
-            if !self.detail.is_empty()&&self.detail_page==Page::Compare{section(ui,&self.detail_title);egui::ScrollArea::both().id_salt("compare_patch").max_height(450.).show(ui,|ui|{ui.add(egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true));});}
+            if ui.button("Open checkpoints").clicked(){self.page=Page::Snapshots;}
+            if !self.detail.is_empty()&&self.detail_page==Page::Compare{section(ui,&self.detail_title);ui.add(egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true));}
         });
     }
 

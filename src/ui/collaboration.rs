@@ -87,6 +87,7 @@ impl Branchroom {
                 (1, "Mine"),
                 (2, "Review requested"),
                 (3, "Create"),
+                (5, "Closed / merged"),
             ] {
                 ui.selectable_value(&mut selected_tab, index, label);
             }
@@ -102,12 +103,13 @@ impl Branchroom {
             self.pull_request_details(ui, ctx);
             return;
         }
-        if self.pr_tab < 3 {
+        if self.pr_tab < 3 || self.pr_tab == 5 {
             if !self.preview_mode && !self.prs_requested && self.receiver.is_none() {
                 self.prs_requested = true;
                 let filter = match self.pr_tab {
                     1 => branchroom::collaboration::PullRequestFilter::Mine,
                     2 => branchroom::collaboration::PullRequestFilter::ReviewRequested,
+                    5 => branchroom::collaboration::PullRequestFilter::Closed,
                     _ => branchroom::collaboration::PullRequestFilter::Open,
                 };
                 self.execute(Task::PullRequests(filter), ctx);
@@ -139,6 +141,7 @@ impl Branchroom {
                         let filter = match self.pr_tab {
                             1 => branchroom::collaboration::PullRequestFilter::Mine,
                             2 => branchroom::collaboration::PullRequestFilter::ReviewRequested,
+                            5 => branchroom::collaboration::PullRequestFilter::Closed,
                             _ => branchroom::collaboration::PullRequestFilter::Open,
                         };
                         self.execute(Task::PullRequests(filter), ctx);
@@ -146,11 +149,12 @@ impl Branchroom {
                 });
             }
             egui::ScrollArea::vertical().id_salt("pr_list").max_height(420.).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             for pr in self.pull_requests.clone() {
                 ui.push_id(pr.number, |ui| {
                     surface().show(ui, |ui| {
                         ui.horizontal_wrapped(|ui| {
-                            badge(ui, if pr.is_draft { "Draft" } else { &pr.state }, if pr.is_draft || pr.state == "CLOSED" { MUTED() } else { SUCCESS() });
+                            badge(ui, if pr.is_draft { "Draft" } else { &pr.state }, if pr.is_draft { MUTED() } else if pr.state == "CLOSED" { MERGED() } else { PULL_REQUEST() });
                             ui.hyperlink_to(format!("#{} {}", pr.number, pr.title), &pr.url);
                         });
                         subtitle(

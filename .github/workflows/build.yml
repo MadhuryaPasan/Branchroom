@@ -26,13 +26,42 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/Build-Windows.ps1 -SkipChecks
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read package metadata.' }
+          $version = ($metadata.packages | Where-Object name -EQ 'branchroom').version
+          $iscc = @(
+            (Get-Command iscc.exe -ErrorAction SilentlyContinue).Source
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup --no-progress --yes
+            if ($LASTEXITCODE -ne 0) { throw 'Could not install Inno Setup.' }
+            $iscc = @(
+              'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+              'C:\Program Files\Inno Setup 6\ISCC.exe'
+            ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'Inno Setup (ISCC.exe) is not installed on this runner.' }
+          & $iscc "/DAppVersion=$version" "/DOutputDir=$env:GITHUB_WORKSPACE\dist" "$env:GITHUB_WORKSPACE\installer\Branchroom.iss"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows installer build failed.' }
+          $latestPath = Join-Path $env:GITHUB_WORKSPACE 'dist/latest.json'
+          $latest = Get-Content -LiteralPath $latestPath -Raw | ConvertFrom-Json
+          $latest.PSObject.Properties.Remove('executable')
+          $latest | Add-Member -NotePropertyName installer -NotePropertyValue "Branchroom-$version-Windows-x64-Setup.exe"
+          $latest | Add-Member -NotePropertyName portableArchive -NotePropertyValue "$($latest.archive)"
+          $latest | ConvertTo-Json | Set-Content -LiteralPath $latestPath -Encoding UTF8
       - name: Prepare release assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path release-assets -Force | Out-Null
 
           if ($env:RUNNER_OS -eq 'Windows') {
-            Copy-Item target/release/branchroom.exe release-assets/
+            Copy-Item dist/*-Setup.exe release-assets/
             Copy-Item dist/*.zip release-assets/
             Copy-Item dist/latest.json release-assets/
           } else {

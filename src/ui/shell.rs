@@ -3,10 +3,10 @@ use super::*;
 impl Page {
     fn title(self) -> &'static str {
         match self {
-            Self::History => "Graph",
+            Self::History => "Project",
             Self::Changes => "Changes",
             Self::Github => "Pull requests",
-            Self::Snapshots => "Time Machine",
+            Self::Snapshots => "Checkpoints",
             Self::Stashes => "Shelved work",
             Self::Branches => "Branches",
             Self::Compare => "Compare",
@@ -20,6 +20,11 @@ impl Page {
 }
 impl Branchroom {
     pub(super) fn shortcuts(&mut self, ctx: &egui::Context) {
+        if ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::D)
+        }) {
+            self.debug_layout = !self.debug_layout;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.cancel_graph_action(ctx);
             self.pending = None;
@@ -56,6 +61,10 @@ impl Branchroom {
             && self.repo.is_some()
             && self.receiver.is_none()
         {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::S)) {
+                self.capture_open = true;
+                return;
+            }
             if ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
             }) {
@@ -118,11 +127,9 @@ impl Branchroom {
                             for page in [
                                 Page::History,
                                 Page::Changes,
-                                Page::Github,
                                 Page::Snapshots,
-                                Page::Branches,
-                                Page::Merge,
-                                Page::Compare,
+                                Page::Github,
+                                Page::Tools,
                             ] {
                                 if ui.button(page.title()).clicked() {
                                     self.page = page;
@@ -177,6 +184,16 @@ impl Branchroom {
                             false,
                             egui::Button::new("Sync").min_size(egui::vec2(0., 32.)),
                         );
+                    }
+                    if ui
+                        .add_enabled(
+                            self.repo.is_some() && writable,
+                            egui::Button::new("Save checkpoint").min_size(egui::vec2(0., 32.)),
+                        )
+                        .on_hover_text("Save a local checkpoint of your current work · Ctrl+S")
+                        .clicked()
+                    {
+                        self.capture_open = true;
                     }
                     if ui
                         .add_sized(
@@ -290,6 +307,17 @@ impl Branchroom {
                     });
             }
         }
+        if self.page != Page::History {
+            self.detail_open = false;
+            if self
+                .output
+                .lines()
+                .next()
+                .is_some_and(|line| line.starts_with("commit "))
+            {
+                self.output = "Ready".into();
+            }
+        }
         self.graph_preview_bar(ui, ctx);
         if self.activity_open {
             egui::Panel::bottom("activity_drawer")
@@ -323,13 +351,11 @@ impl Branchroom {
                     for (page, kind) in [
                         (Page::History, Icon::Graph),
                         (Page::Changes, Icon::Files),
-                        (Page::Github, Icon::Cloud),
                         (Page::Snapshots, Icon::Layers),
+                        (Page::Github, Icon::Cloud),
+                        (Page::Tools, Icon::Code),
                     ] {
                         self.navigation_row(ui, page, kind);
-                    }
-                    if self.settings.advanced_mode {
-                        self.navigation_row(ui, Page::Tools, Icon::Code);
                     }
                     ui.add_space(16.);
                     section(ui, "SYSTEM");
@@ -337,6 +363,22 @@ impl Branchroom {
                     self.navigation_row(ui, Page::Remotes, Icon::Folder);
                     self.navigation_row(ui, Page::Settings, Icon::Settings);
                 });
+        }
+        let show_project_inspector = self.inspector_open
+            && matches!(self.page, Page::History | Page::Branches | Page::Compare)
+            && ctx.content_rect().width() >= 1100.;
+        if show_project_inspector {
+            egui::Panel::right("project_commit_inspector")
+                .default_size(320.)
+                .size_range(260.0..=480.0)
+                .resizable(true)
+                .frame(
+                    egui::Frame::new()
+                        .fill(SURFACE())
+                        .stroke(egui::Stroke::new(1., LINE()))
+                        .inner_margin(12),
+                )
+                .show(ui, |ui| self.commit_inspector(ui, ctx));
         }
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(0)).show(ui, |ui| {
             ui.add_enabled_ui(self.pending.is_none() && self.form.is_none() && (!self.manipulation.active()||egui::DragAndDrop::has_payload_of_type::<manipulation::Payload>(ctx)), |ui| {
@@ -557,8 +599,8 @@ impl Branchroom {
                 ),
                 (
                     "Workspace",
-                    "Open Time Machine",
-                    "time machine snapshots undo recovery",
+                    "Open checkpoints",
+                    "checkpoints time machine snapshots undo recovery",
                     Page::Snapshots,
                     "git reflog --date=relative",
                 ),
@@ -956,7 +998,7 @@ impl Branchroom {
                 ui.set_max_width((ctx.content_rect().width() - 48.).clamp(180., 360.));
                 ui.label(RichText::new("Sync this branch").strong());
                 ui.horizontal_wrapped(|ui| {
-                    badge(ui, "This computer", ACCENT());
+                    badge(ui, "This computer", WORKING_COPY());
                     ui.label(if repo.sync_counts.is_some() { format!("{ahead} to push · {behind} to pull") } else { "Status unavailable".to_owned() });
                     badge(
                         ui,
@@ -965,7 +1007,7 @@ impl Branchroom {
                         } else {
                             "No remote"
                         },
-                        MUTED(),
+                        if remote_upstream { REMOTE() } else { MUTED() },
                     );
                 });
                 let message = if !remote_upstream {
@@ -989,7 +1031,7 @@ impl Branchroom {
                 let right = rect.right_center() - egui::vec2(12., 0.);
                 ui.painter().line_segment([left, right], egui::Stroke::new(2., CONNECTOR()));
                 ui.painter().circle_filled(left, 5., ACCENT());
-                ui.painter().circle_filled(right, 5., if ahead == 0 && behind == 0 { SUCCESS() } else { WARNING() });
+                ui.painter().circle_filled(right, 5., if ahead == 0 && behind == 0 { SAFE() } else { MODIFIED() });
                 ui.painter().text(rect.center(), egui::Align2::CENTER_BOTTOM, format!("{ahead} outgoing / {behind} incoming"), egui::FontId::proportional(12.), INK());
                 ui.add_enabled_ui(writable && self.receiver.is_none(), |ui| {
                     if ui.button("Check for updates").clicked() {
@@ -1148,22 +1190,48 @@ impl Branchroom {
     fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         egui::Frame::new().inner_margin(36).show(ui, |ui| {
             ui.label(
-                RichText::new("Open a repository")
-                    .size(TEXT_HEADER)
+                RichText::new("See your project clearly")
+                    .size(TEXT_TITLE)
                     .strong(),
             );
             subtitle(
                 ui,
-                "Choose a repository on this computer or clone one to get started.",
+                "Open a repository to see its branches and commits, save local checkpoints, and share changes safely.",
             );
-            if ui.button("Open repository…").clicked()
-                && let Some(path) = rfd::FileDialog::new().pick_folder()
-            {
-                self.open_repo(path, ctx);
-            }
-            if ui.button("Clone repository…").clicked() {
-                self.page = Page::Remotes;
-            }
+            ui.add_space(16.);
+            ui.horizontal_wrapped(|ui| {
+                if primary(ui, "Open repository…").clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
+                {
+                    self.open_repo(path, ctx);
+                }
+                if ui.button("Clone repository…").clicked() {
+                    self.page = Page::Remotes;
+                }
+                if ui.button("Create repository…").clicked() {
+                    self.page = Page::Remotes;
+                }
+            });
+            ui.add_space(22.);
+            ui.horizontal_wrapped(|ui| {
+                surface().show(ui, |ui| {
+                    ui.set_min_width(190.);
+                    badge(ui, "Project", ACCENT());
+                    ui.add(egui::Label::new("See branches, commits, and Pull Requests on one graph.").wrap());
+                });
+                surface().show(ui, |ui| {
+                    ui.set_min_width(190.);
+                    badge(ui, "Changes", ADDED());
+                    ui.add(egui::Label::new("Stage only what you want and review the exact commit contents.").wrap());
+                });
+                surface().show(ui, |ui| {
+                    ui.set_min_width(190.);
+                    badge(ui, "Checkpoints", CHECKPOINT());
+                    ui.add(egui::Label::new("Save local work before trying an idea or risky action.").wrap());
+                });
+            });
+            ui.add_space(22.);
+            section(ui, "RECENT REPOSITORIES");
             for path in self.settings.recent.clone().iter().take(5) {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
                 if theme::picker_row(

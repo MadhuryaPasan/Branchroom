@@ -39,6 +39,13 @@ impl Branchroom {
     pub(super) fn select_file(&mut self, path: &str) {
         self.selected_path = path.into();
         self.compact_changes_tab = 1;
+        if let Some(change) = self
+            .repo
+            .as_ref()
+            .and_then(|repo| repo.changes.iter().find(|change| change.path == path))
+        {
+            self.diff_staged = change.index != ' ' && change.worktree == ' ';
+        }
         self.image_data = None;
         self.image_view = None;
         self.file_patch = None;
@@ -159,12 +166,14 @@ impl Branchroom {
                     0 => self.change_list(ui, ctx, &repo, writable),
                     1 => self.patch_view(ui, ctx, writable),
                     _ => {
-                        egui::Panel::bottom("compact_commit_footer")
-                            .frame(egui::Frame::new().fill(PAPER()))
-                            .show(ui, |ui| self.commit_footer(ui, writable));
+                        let footer_height = 66.;
                         egui::ScrollArea::vertical()
                             .id_salt("compact_commit")
+                            .max_height((ui.available_height() - footer_height).max(120.))
                             .show(ui, |ui| self.commit_composer(ui));
+                        egui::Frame::new()
+                            .fill(PAPER())
+                            .show(ui, |ui| self.commit_footer(ui, writable));
                     }
                 });
             return;
@@ -203,6 +212,56 @@ impl Branchroom {
     fn commit_composer(&mut self, ui: &mut egui::Ui) {
         section(ui, "COMMIT");
         ui.add_space(4.);
+        if let Some(repo) = &self.repo {
+            let staged = repo
+                .changes
+                .iter()
+                .filter(|change| change.index != ' ' && change.index != '?')
+                .count();
+            let remaining = repo.changes.len().saturating_sub(staged);
+            surface().show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("This commit contains").strong());
+                    badge(
+                        ui,
+                        &format!(
+                            "{} staged {}",
+                            staged,
+                            if staged == 1 { "file" } else { "files" }
+                        ),
+                        if staged == 0 { WARNING() } else { ADDED() },
+                    );
+                    if remaining > 0 {
+                        badge(
+                            ui,
+                            &format!(
+                                "{} left out",
+                                remaining
+                            ),
+                            MUTED(),
+                        );
+                    }
+                    if !repo.commit_locks.is_empty() {
+                        badge(
+                            ui,
+                            &format!("{} locked", repo.commit_locks.len()),
+                            CHECKPOINT(),
+                        );
+                    }
+                });
+                subtitle(
+                    ui,
+                    if staged == 0 {
+                        "Select files, hunks, or lines before committing."
+                    } else if remaining > 0 {
+                        "Only staged changes will be included. Unstaged changes stay in your working copy."
+                    } else {
+                        "All visible changes are staged for this commit."
+                    },
+                );
+            });
+            ui.add_space(8.);
+        }
         let count = self.commit_message.chars().count();
         ui.horizontal(|ui| {
             ui.label(RichText::new("Summary (required)").strong());
@@ -452,7 +511,7 @@ impl Branchroom {
                 if partial{egui::WidgetInfo::labeled(egui::Role::CheckBox,enabled,label)}else{egui::WidgetInfo::selected(egui::Role::CheckBox,enabled,staged,label)}
             });
             if checkbox.on_hover_text(format!("Include {}",change.path)).changed(){if staged{self.run_git(&["add","--",&change.path],ctx);}else if self.repo.as_ref().is_some_and(|r|r.head.is_empty()){self.run_git(&["rm","--cached","--",&change.path],ctx);}else{self.run_git(&["restore","--staged","--",&change.path],ctx);}}
-            let (status,status_text,color)=if lock.is_some(){("L","Locked",MUTED())}else if change.conflict(){("!","Conflict",DANGER())}else if change.index=='?' {("U","Untracked",SUCCESS())}else if change.index=='A'||change.worktree=='A'{("A","Added",SUCCESS())}else if change.index=='D'||change.worktree=='D'{("D","Deleted",DANGER())}else if change.index=='R'||change.worktree=='R'{("R","Renamed",ACCENT())}else{("M","Modified",WARNING())};
+            let (status,status_text,color)=if lock.is_some(){("L","Locked",MUTED())}else if change.conflict(){("!","Conflict",CONFLICT())}else if change.index=='?' {("U","Untracked",ADDED())}else if change.index=='A'||change.worktree=='A'{("A","Added",ADDED())}else if change.index=='D'||change.worktree=='D'{("D","Deleted",REMOVED())}else if change.index=='R'||change.worktree=='R'{("R","Renamed",ACCENT())}else{("M","Modified",MODIFIED())};
             theme::status_badge(ui, status, status_text, color);
             let file_width=(ui.available_width()-44.).max(20.);
             let selected=self.selected_path==change.path;

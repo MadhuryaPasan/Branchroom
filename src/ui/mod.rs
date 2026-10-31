@@ -363,6 +363,7 @@ pub struct Branchroom {
     manipulation: manipulation::Manipulation,
     activity_open: bool,
     inspector_open: bool,
+    inspector_drawer_open: bool,
     detail_open: bool,
     patch_raw: bool,
     detail_title: String,
@@ -377,6 +378,7 @@ pub struct Branchroom {
     branch_picker_requested: bool,
     density: usize,
     auto_refresh: bool,
+    debug_layout: bool,
     capture_open: bool,
     preview_mode: bool,
     file_patch: Option<std::sync::Arc<branchroom::diff::Patch>>,
@@ -531,6 +533,7 @@ impl Branchroom {
             manipulation: Default::default(),
             activity_open: false,
             inspector_open: true,
+            inspector_drawer_open: false,
             detail_open: false,
             patch_raw: false,
             detail_title: "Patch preview".into(),
@@ -545,6 +548,7 @@ impl Branchroom {
             branch_picker_requested: false,
             density,
             auto_refresh,
+            debug_layout: false,
             capture_open: false,
             preview_mode,
             file_patch: None,
@@ -983,6 +987,22 @@ impl eframe::App for Branchroom {
         }
         self.shortcuts(&ctx);
         self.chrome(ui, &ctx);
+        if self.debug_layout {
+            let painter = ctx.debug_painter();
+            painter.rect_stroke(
+                ui.max_rect(),
+                0.,
+                egui::Stroke::new(1., egui::Color32::from_rgb(255, 0, 170)),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                ui.max_rect().left_top() + egui::vec2(8., 8.),
+                egui::Align2::LEFT_TOP,
+                "Layout debug · Ctrl+Shift+D",
+                egui::FontId::monospace(11.),
+                egui::Color32::from_rgb(255, 0, 170),
+            );
+        }
         self.command_bar(&ctx);
         self.dialogs(&ctx);
         self.switch_dialog(&ctx);
@@ -1071,29 +1091,22 @@ fn heading(ui: &mut egui::Ui, title: &str, description: &str) {
     });
 }
 fn code(ui: &mut egui::Ui, text: &str) {
-    let lines: Vec<_> = text.lines().collect();
     ui.spacing_mut().item_spacing.y = 0.;
-    egui::ScrollArea::both()
-        .id_salt("code_scroll")
-        .auto_shrink([false, false])
-        .show_rows(ui, 20., lines.len(), |ui, range| {
-            ui.spacing_mut().item_spacing.y = 0.;
-            for line in &lines[range] {
-                let color = if line.starts_with('+') && !line.starts_with("+++") {
-                    SUCCESS()
-                } else if line.starts_with('-') && !line.starts_with("---") {
-                    DANGER()
-                } else if line.starts_with("@@") {
-                    ACCENT()
-                } else {
-                    INK()
-                };
-                ui.add_sized(
-                    [ui.available_width(), 20.],
-                    egui::Label::new(RichText::new(*line).monospace().size(12.).color(color))
-                        .extend()
-                        .selectable(true),
-                );
-            }
-        });
+    for line in text.lines() {
+        let color = if line.starts_with('+') && !line.starts_with("+++") {
+            SUCCESS()
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            DANGER()
+        } else if line.starts_with("@@") {
+            ACCENT()
+        } else {
+            INK()
+        };
+        ui.add_sized(
+            [ui.available_width(), 20.],
+            egui::Label::new(RichText::new(line).monospace().size(12.).color(color))
+                .extend()
+                .selectable(true),
+        );
+    }
 }

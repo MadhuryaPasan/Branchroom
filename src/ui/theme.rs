@@ -10,6 +10,11 @@ pub(super) const TEXT_SUBHEAD: f32 = 16.;
 pub(super) const TEXT_HEADER: f32 = 18.;
 pub(super) const TEXT_TITLE: f32 = 24.;
 pub(super) const SPACE: [f32; 6] = [4., 8., 12., 16., 24., 32.];
+#[allow(dead_code)]
+pub(super) const MAX_CONTENT_WIDTH: f32 = 1100.;
+pub(super) const CARD_PADDING: f32 = 12.;
+#[allow(dead_code)]
+pub(super) const CONTROL_HEIGHT: f32 = 28.;
 
 // Semantic colors are selected together so custom-painted views follow the theme.
 thread_local! { static LIGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -65,6 +70,36 @@ pub(super) fn DANGER() -> Color32 {
 }
 pub(super) fn SNAPSHOT() -> Color32 {
     color((196, 166, 250), (105, 62, 155))
+}
+pub(super) fn CHECKPOINT() -> Color32 {
+    SNAPSHOT()
+}
+pub(super) fn ADDED() -> Color32 {
+    SUCCESS()
+}
+pub(super) fn REMOVED() -> Color32 {
+    DANGER()
+}
+pub(super) fn MODIFIED() -> Color32 {
+    WARNING()
+}
+pub(super) fn CONFLICT() -> Color32 {
+    DANGER()
+}
+pub(super) fn MERGED() -> Color32 {
+    SUCCESS()
+}
+pub(super) fn SAFE() -> Color32 {
+    SUCCESS()
+}
+pub(super) fn REMOTE() -> Color32 {
+    CONNECTOR()
+}
+pub(super) fn WORKING_COPY() -> Color32 {
+    ACCENT()
+}
+pub(super) fn PULL_REQUEST() -> Color32 {
+    ACCENT()
 }
 
 fn bundled_fonts() -> egui::FontDefinitions {
@@ -178,12 +213,103 @@ pub(super) fn install(ctx: &egui::Context, light: bool) {
     ctx.set_theme(theme);
 }
 
-pub(super) fn surface() -> egui::Frame {
-    egui::Frame::new()
-        .fill(SURFACE())
-        .stroke(Stroke::new(1., LINE()))
-        .corner_radius(6)
-        .inner_margin(16)
+#[derive(Clone, Copy, Default)]
+pub(super) struct Card {
+    min_height: Option<f32>,
+}
+
+impl Card {
+    #[allow(dead_code)]
+    pub(super) fn min_height(mut self, height: f32) -> Self {
+        self.min_height = Some(height);
+        self
+    }
+
+    pub(super) fn show<R>(
+        self,
+        ui: &mut egui::Ui,
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<R> {
+        let frame = egui::Frame::new()
+            .fill(SURFACE())
+            .stroke(Stroke::new(1., LINE()))
+            .corner_radius(6)
+            .inner_margin(CARD_PADDING);
+        if let Some(min_height) = self.min_height {
+            frame.show(ui, |ui| {
+                ui.set_min_height((min_height - CARD_PADDING * 2.).max(0.));
+                add_contents(ui)
+            })
+        } else {
+            frame.show(ui, add_contents)
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn header(
+        ui: &mut egui::Ui,
+        icon_kind: Option<Icon>,
+        title: &str,
+        badge_text: Option<&str>,
+    ) {
+        ui.horizontal(|ui| {
+            if let Some(icon_kind) = icon_kind {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(20., 20.), egui::Sense::hover());
+                icon(ui.painter(), rect, icon_kind, ACCENT());
+            }
+            ui.add(
+                egui::Label::new(RichText::new(title).strong())
+                    .truncate()
+                    .extend(),
+            )
+            .on_hover_text(title);
+            if let Some(badge_text) = badge_text {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    badge(ui, badge_text, ACCENT())
+                });
+            }
+        });
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn footer(ui: &mut egui::Ui, add_actions: impl FnOnce(&mut egui::Ui)) {
+        ui.add_space(SPACE[1]);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            add_actions(ui)
+        });
+    }
+}
+
+pub(super) fn surface() -> Card {
+    Card::default()
+}
+
+#[allow(dead_code)]
+pub(super) fn max_content_width(ui: &egui::Ui) -> f32 {
+    ui.available_width().min(MAX_CONTENT_WIDTH)
+}
+
+#[allow(dead_code)]
+pub(super) fn responsive_columns(available_width: f32, min_card_width: f32, gap: f32) -> usize {
+    let min_card_width = min_card_width.max(1.);
+    let gap = gap.max(0.);
+    ((available_width + gap) / (min_card_width + gap))
+        .floor()
+        .max(1.) as usize
+}
+
+#[allow(dead_code)]
+pub(super) fn responsive_card_width(available_width: f32, columns: usize, gap: f32) -> f32 {
+    let columns = columns.max(1) as f32;
+    ((available_width - gap.max(0.) * (columns - 1.)) / columns).max(0.)
+}
+
+#[allow(dead_code)]
+pub(super) fn primary_action(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.add_sized(
+        [ui.spacing().interact_size.x.max(0.), CONTROL_HEIGHT],
+        egui::Button::new(label),
+    )
 }
 pub(super) fn primary(ui: &mut egui::Ui, label: &str) -> egui::Response {
     ui.add(

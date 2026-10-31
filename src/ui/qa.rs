@@ -958,11 +958,11 @@ fn command_bar_opens_with_shortcut_and_filters_actions() {
     let mut harness = screen(Page::History, false);
     harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::K);
     harness.run_steps(2);
-    assert!(harness.query_by_label("Open Time Machine").is_some());
+    assert!(harness.query_by_label("Open checkpoints").is_some());
     harness.state_mut().command_bar_query = "settings".into();
     harness.run_steps(2);
     assert!(harness.query_by_label("Open settings").is_some());
-    assert!(harness.query_by_label("Open Time Machine").is_none());
+    assert!(harness.query_by_label("Open checkpoints").is_none());
     harness.state_mut().command_bar_query = "I committed to the wrong branch".into();
     harness.run_steps(2);
     assert!(
@@ -1146,11 +1146,102 @@ fn compare_screen_names_each_branch_and_commit_direction() {
     assert!(harness.query_by_label("Compare with").is_some());
     assert!(harness.query_by_label("Only in main").is_some());
     assert!(harness.query_by_label("Only in HEAD").is_some());
+    let repo = harness.state().repo.as_ref().unwrap();
+    let head_commit = repo
+        .commits
+        .iter()
+        .find(|commit| commit.id == repo.head)
+        .unwrap();
+    assert!(
+        harness
+            .query_by_label(&format!(
+                "{}  {}",
+                short(&head_commit.id),
+                head_commit.subject
+            ))
+            .is_some()
+    );
     assert!(
         harness
             .query_by_label("Files changed between branches")
             .is_some()
     );
+}
+
+#[test]
+fn compare_layout_keeps_content_visible_across_widths_and_scales() {
+    use egui_kittest::kittest::Queryable;
+
+    for width in [900., 1100., 1320., 1920.] {
+        for scale in [1., 1.25, 1.5] {
+            let mut harness = screen(Page::Compare, false);
+            harness.ctx.set_zoom_factor(scale);
+            harness.set_size(egui::vec2(width, 820.));
+            harness.run_steps(4);
+            let wide_layout = harness.ctx.content_rect().width() >= 1100.;
+            let selected_commit = harness.state().repo.as_ref().unwrap().head.clone();
+            {
+                let app = harness.state_mut();
+                app.selected_commit = selected_commit.clone();
+                app.commit_files_for = selected_commit;
+                app.commit_files = vec![CommitFile {
+                    path: "docs/inspector-layout.md".into(),
+                    added: "3".into(),
+                    removed: "1".into(),
+                }];
+                app.inspector_open = true;
+                app.inspector_drawer_open = !wide_layout;
+            }
+            harness.run_steps(3);
+
+            let window = harness.ctx.content_rect();
+            let files_row = harness.get_by_label("src/cache.rs  +12 / -4").rect();
+            assert!(
+                files_row.left() >= window.left() - 1. && files_row.right() <= window.right() + 1.,
+                "Compare file row exceeds the window at {width}px/{scale}x: {files_row:?}, window={window:?}"
+            );
+            assert!(
+                files_row.width() >= 520.,
+                "Compare column is narrower than 520px at {width}px/{scale}x: {files_row:?}"
+            );
+            assert!(
+                harness
+                    .query_by_label("docs/inspector-layout.md  +3 / -1")
+                    .is_some(),
+                "Inspector row missing at {width}px/{scale}x: selected={}, cached_for={}, file_count={}, drawer={}, details_header={}, changed_files={}",
+                harness.state().selected_commit,
+                harness.state().commit_files_for,
+                harness.state().commit_files.len(),
+                harness.state().inspector_drawer_open,
+                harness.query_by_label("Commit details").is_some(),
+                harness.query_by_label("Changed files").is_some(),
+            );
+
+            if wide_layout {
+                let inspector_row = harness
+                    .get_by_label("docs/inspector-layout.md  +3 / -1")
+                    .rect();
+                assert!(
+                    files_row.right() <= inspector_row.left(),
+                    "Compare content overlaps inspector at {width}px/{scale}x: compare={files_row:?}, inspector={inspector_row:?}"
+                );
+                assert!(
+                    inspector_row.left() >= window.left() - 1.
+                        && inspector_row.right() <= window.right() + 1.,
+                    "Inspector row exceeds the window at {width}px/{scale}x: {inspector_row:?}, window={window:?}"
+                );
+            } else {
+                let drawer_row = harness
+                    .get_by_label("docs/inspector-layout.md  +3 / -1")
+                    .rect();
+                assert!(
+                    drawer_row.left() >= window.left() - 1.
+                        && drawer_row.right() <= window.right() + 1.,
+                    "Inspector drawer row exceeds the window at {width}px/{scale}x: {drawer_row:?}, window={window:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -1770,7 +1861,7 @@ fn time_machine_replaces_snapshot_modes_and_keeps_recovery_actions_named() {
     let mut harness = screen(Page::Snapshots, true);
     harness.run_steps(3);
     for label in [
-        "Save safety point",
+        "Save checkpoint…",
         "Undo last action",
         "Redo action",
         "Shelve work",

@@ -341,14 +341,7 @@ impl Branchroom {
         if !self.detail.is_empty() {
             ui.add_space(20.);
             section(ui, &self.detail_title);
-            egui::ScrollArea::both()
-                .id_salt("github_output")
-                .max_height(400.)
-                .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true),
-                    );
-                });
+            ui.add(egui::Label::new(RichText::new(&self.detail).monospace()).selectable(true));
         }
     }
     pub(super) fn tools(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
@@ -440,9 +433,16 @@ impl Branchroom {
         surface().show(ui,|ui|{
             ui.label(RichText::new("Run a command").size(18.).strong());ui.add_space(12.);
             ui.horizontal(|ui|{ui.label("Executable");egui::ComboBox::from_id_salt("command_program").selected_text(&self.command_program).show_ui(ui,|ui|{ui.selectable_value(&mut self.command_program,"git".into(),"git");ui.selectable_value(&mut self.command_program,"gh".into(),"gh");}).response.on_hover_text("Command executable");});
-            ui.label("Arguments as a JSON array");ui.add(egui::TextEdit::multiline(&mut self.command_json).hint_text("Command arguments as a JSON array").code_editor().desired_rows(3).desired_width(f32::INFINITY));subtitle(ui,"Each string is one argument. Shell expressions are not expanded. Interactive commands are unsupported.");ui.add_space(14.);
-            if primary(ui,"Review command").clicked(){match serde_json::from_str::<Vec<String>>(&self.command_json){Ok(args)if !args.is_empty()=>self.pending=Some(Pending{title:"Run command".into(),explanation:"This command runs with your permissions and can change local files, configuration, or remote services. Review every argument.".into(),task:if self.command_program=="git"{Task::RawGit(args)}else{Task::Command{program:self.command_program.clone(),args,refresh:true}}}),_=>self.report(Err("Enter a nonempty JSON array of argument strings, for example [\"status\", \"--short\"].".into()))}}
-            ui.add_space(8.);egui::CollapsingHeader::new("Argument examples").show(ui,|ui|{ui.monospace("[\"log\", \"--oneline\", \"--graph\", \"--all\"]\n[\"bundle\", \"create\", \"backup.bundle\", \"--all\"]\n[\"config\", \"user.email\", \"you@example.com\"]\n[\"lfs\", \"status\"]");});
+            ui.label("Command line");
+            ui.add(egui::TextEdit::singleline(&mut self.command_json).hint_text("status --short --branch").desired_width(f32::INFINITY));
+            let parsed = self.command_json.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+            subtitle(ui, "Arguments are split safely for review; shell expansion and interactive commands are not supported.");
+            if !parsed.is_empty() {
+                ui.label(RichText::new(format!("Parsed arguments: {}", parsed.join(" · "))).monospace().color(MUTED()));
+            }
+            ui.add_space(14.);
+            if primary(ui,"Review command").clicked(){if parsed.is_empty(){self.report(Err("Enter a command and at least one argument.".into()));}else{self.pending=Some(Pending{title:"Run command".into(),explanation:format!("Parsed arguments:\n{}\n\nThis command runs with your permissions and can change local files, configuration, or remote services. Review every argument.",parsed.join("\n")),task:if self.command_program=="git"{Task::RawGit(parsed)}else{Task::Command{program:self.command_program.clone(),args:parsed,refresh:true}}});}}
+            ui.add_space(8.);egui::CollapsingHeader::new("Command examples").show(ui,|ui|{ui.monospace("log --oneline --graph --all\nbundle create backup.bundle --all\nconfig user.email you@example.com\nlfs status");});
         });
         if !self.detail.is_empty() {
             ui.add_space(20.);
@@ -604,17 +604,7 @@ impl Branchroom {
             });
         });
         ui.add_space(20.);
-        if primary(ui, "Save preferences").clicked() {
-            self.error = false;
-            if self.preview_mode {
-                self.report(Ok("Preferences are not saved in UI preview.".into()));
-            } else {
-                self.save();
-                if !self.error {
-                    self.report(Ok("Preferences saved".into()));
-                }
-            }
-        }
+        subtitle(ui, "Preferences save automatically as you change them.");
         ui.add_space(12.);
         ui.add(
             egui::Label::new(
