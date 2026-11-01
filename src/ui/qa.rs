@@ -1986,6 +1986,7 @@ fn commit_patch_preview_keeps_subject_and_sha_in_its_title() {
 fn compare_screen_names_each_branch_and_commit_direction() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::Compare, false);
+    harness.set_size(egui::vec2(760., 927.));
     harness.run_steps(4);
     assert!(harness.query_by_label("Compare branches").is_some());
     assert!(harness.query_by_label("Base branch").is_some());
@@ -2011,6 +2012,12 @@ fn compare_screen_names_each_branch_and_commit_direction() {
         harness
             .query_by_label("Files changed between branches")
             .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("No commits unique to this branch.")
+            .is_some(),
+        "Compact Compare should show an explicit empty-branch explanation"
     );
     assert!(
         harness

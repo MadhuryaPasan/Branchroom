@@ -496,7 +496,7 @@ impl Branchroom {
                                         RichText::new(title).size(TEXT_SUBHEAD).strong(),
                                     )
                                     .id_salt(("compare_commit_list", &key, title))
-                                    .default_open(commits.len() <= 5 && !commits.is_empty())
+                                    .default_open(commits.len() <= 5)
                                     .show(ui, |ui| {
                                         badge(ui, &commits.len().to_string(), MUTED());
                                         if commits.is_empty() {
