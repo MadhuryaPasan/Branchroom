@@ -600,9 +600,6 @@ impl Branchroom {
     }
     fn report(&mut self, result: Result<String>) {
         self.error = result.is_err();
-        if self.error {
-            self.activity_open = true;
-        }
         self.output = result.unwrap_or_else(|e| e);
     }
     fn save(&mut self) {

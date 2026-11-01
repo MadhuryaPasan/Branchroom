@@ -155,8 +155,8 @@ fn branch_card(
     );
     for (text, y, size, text_color, reserve, max_rows) in [
         (title, 10., 14., INK(), 160., 2),
-        (status, 36., 12., color, 160., 2),
-        (location, 62., 12., MUTED(), 160., 2),
+        (status, 43., 12., color, 160., 2),
+        (location, 74., 12., MUTED(), 160., 1),
     ] {
         let clip = egui::Rect::from_min_max(
             rect.min + egui::vec2(31., y),
@@ -295,9 +295,24 @@ impl Branchroom {
                         );
                         response.dnd_set_drag_payload(manipulation::Payload::Branch{name:branch.name.clone(),current:branch.current,reference:branch_ref.clone()});
                         self.graph_drop(ui,&response,manipulation::Target::Branch(&branch_ref));
-                        if let Some(workspace) = repo.workspaces.iter().find(|workspace| workspace.branch == branch.name) {
-                            let desk_name = workspace.path.file_name().unwrap_or(workspace.path.as_os_str()).to_string_lossy();
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-252.,card.top()+46.),egui::vec2(120.,32.))),|ui| {
+                        let workspace = repo
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.branch == branch.name);
+                        let main=repo.default_branch.as_ref().and_then(|name|repo.branches.iter().find(|b|b.remote&&b.name==format!("origin/{name}")).or_else(||repo.branches.iter().find(|b|!b.remote&&b.name==*name)));
+                        let update_branch = !branch.remote && main.is_none_or(|b|b.id!=branch.id);
+                        let source=main.map(|b|format!("refs/{}/{}",if b.remote{"remotes"}else{"heads"},b.name)).unwrap_or_else(||repo.base.clone());
+                        let total=(branch.ahead+branch.behind).max(1) as f32;
+                        let bar=egui::Rect::from_min_size(card.left_bottom()+egui::vec2(30.,-6.),egui::vec2((card.width()-48.).max(0.),3.));
+                        ui.painter().rect_filled(bar,1.,LINE());
+                        if branch.ahead>0 { ui.painter().rect_filled(egui::Rect::from_min_size(bar.min,egui::vec2(bar.width()*branch.ahead as f32/total,3.)),1.,SUCCESS()); }
+                        if branch.behind>0 { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bar.right()-bar.width()*branch.behind as f32/total,bar.top()),egui::vec2(bar.width()*branch.behind as f32/total,3.)),1.,WARNING()); }
+                        if response.on_hover_text(format!("{}\n{}\n{}",branch.name,status,location)).clicked(){self.selected_commit=branch.id.clone();self.inspector_open=true;}
+                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-124.,card.top()+8.),egui::vec2(116.,32.))),|ui|{
+                            let actions = ui.menu_button("Actions",|ui|{
+                            ui.label(branchroom::collaboration::branch_status(branch,&repo.branches));
+                            if let Some(workspace) = workspace {
+                                let desk_name = workspace.path.file_name().unwrap_or(workspace.path.as_os_str()).to_string_lossy();
                                 let open = ui.button("Open folder").on_hover_text(format!(
                                     "Open this branch's separate Git worktree in its IDE: {} ({desk_name})",
                                     workspace.path.display()
@@ -310,25 +325,16 @@ impl Branchroom {
                                 if open.clicked() {
                                     let result = self.settings.open(&workspace.path,self.settings.ide_for(&workspace.path));
                                     self.report(result);
+                                    ui.close();
                                 }
-                            });
-                        }
-                        let main=repo.default_branch.as_ref().and_then(|name|repo.branches.iter().find(|b|b.remote&&b.name==format!("origin/{name}")).or_else(||repo.branches.iter().find(|b|!b.remote&&b.name==*name)));
-                        let source=main.map(|b|format!("refs/{}/{}",if b.remote{"remotes"}else{"heads"},b.name)).unwrap_or_else(||repo.base.clone());
-                        if !branch.remote&&main.is_none_or(|b|b.id!=branch.id) {
-                            ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-252.,card.top()+84.),egui::vec2(120.,28.))),|ui| {
-                                if ui.button("Update branch").on_hover_text(format!("Preview updating {} from the default branch",branch.name)).clicked(){self.begin_graph_action(branchroom::operation::Kind::Merge{source:source.clone(),target:format!("refs/heads/{}",branch.name)});}
-                            });
-                        }
-                        let total=(branch.ahead+branch.behind).max(1) as f32;
-                        let bar=egui::Rect::from_min_size(card.left_bottom()+egui::vec2(30.,-6.),egui::vec2((card.width()-48.).max(0.),3.));
-                        ui.painter().rect_filled(bar,1.,LINE());
-                        if branch.ahead>0 { ui.painter().rect_filled(egui::Rect::from_min_size(bar.min,egui::vec2(bar.width()*branch.ahead as f32/total,3.)),1.,SUCCESS()); }
-                        if branch.behind>0 { ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(bar.right()-bar.width()*branch.behind as f32/total,bar.top()),egui::vec2(bar.width()*branch.behind as f32/total,3.)),1.,WARNING()); }
-                        if response.on_hover_text(format!("{}\n{}\n{}",branch.name,status,location)).clicked(){self.selected_commit=branch.id.clone();self.inspector_open=true;}
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(egui::pos2(card.right()-124.,card.top()+8.),egui::vec2(116.,32.))),|ui|{
-                            let actions = ui.menu_button("Actions",|ui|{
-                            ui.label(branchroom::collaboration::branch_status(branch,&repo.branches));
+                            }
+                            if update_branch && ui.button("Update branch").on_hover_text(format!("Preview updating {} from the default branch",branch.name)).clicked(){
+                                self.begin_graph_action(branchroom::operation::Kind::Merge{source:source.clone(),target:format!("refs/heads/{}",branch.name)});
+                                ui.close();
+                            }
+                            if workspace.is_some() || update_branch {
+                                ui.separator();
+                            }
                             if ui.button("Open branch code in IDE…").clicked(){self.begin_review(&branch.id,None);ui.close();}
                             if let Some(remote) = remote { ui.menu_button(format!("Remote branch: {}", remote.name), |ui| {
                                 subtitle(ui, "The remote branch as of your last fetch.");

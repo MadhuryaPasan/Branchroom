@@ -135,7 +135,7 @@ impl Branchroom {
             }
             4 => {
                 self.error = true;
-                self.activity_open = true;
+                self.activity_open = false;
                 self.output="Fetch failed: could not resolve the remote host. Check the network connection and remote URL, then retry Fetch.".into();
             }
             6 => {

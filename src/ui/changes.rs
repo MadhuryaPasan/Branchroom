@@ -90,7 +90,8 @@ impl Branchroom {
     pub(super) fn changes(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let repo = self.repo.as_ref().unwrap().clone();
         let writable = !branchroom::safety::is_protected(&repo.root) && self.receiver.is_none();
-        let compact = ui.available_width() < 760.;
+        let tight = ctx.content_rect().width() < 760. || ctx.content_rect().height() < 450.;
+        let compact = ui.available_width() < 760. || ui.available_height() < 560.;
         egui::Panel::top("changes_header").frame(egui::Frame::new().fill(PAPER()).inner_margin(if compact{8}else{16})).show(ui,|ui|{
             ui.horizontal_wrapped(|ui|{ui.label(RichText::new("Changes").size(TEXT_HEADER).strong());badge(ui,&format!("{} {}",repo.changes.len(),if repo.changes.len()==1{"file"}else{"files"}),WARNING());if ui.available_width()>700.{badge(ui,&repo.branch,ACCENT());}
                 ui.menu_button("Actions",|ui|{
@@ -110,12 +111,30 @@ impl Branchroom {
                         if repo.commit_locks.is_empty(){subtitle(ui,"No commit locks in this project.");}
                     });
                 });
-                });
                 if compact && !repo.changes.is_empty() {
-                    ui.selectable_value(&mut self.compact_changes_tab,0,"Files");
-                    ui.selectable_value(&mut self.compact_changes_tab,1,"Diff");
-                    ui.selectable_value(&mut self.compact_changes_tab,2,"Commit");
+                    ui.separator();
+                    ui.label(RichText::new("Change view").strong());
+                    for (index, label) in ["Files", "Diff", "Commit"].iter().enumerate() {
+                        if ui
+                            .selectable_value(&mut self.compact_changes_tab, index, *label)
+                            .clicked()
+                        {
+                            ui.close();
+                        }
+                    }
                 }
+                if tight && !repo.changes.is_empty() {
+                    ui.separator();
+                    ui.label(RichText::new("Files").strong());
+                    self.include_all_files(ui, ctx, &repo, writable);
+                    if ui.button("View staged").clicked() {
+                        self.open_staged_diff();
+                        ui.close();
+                    }
+                    ui.selectable_value(&mut self.files_tree, true, "Tree view");
+                    ui.selectable_value(&mut self.files_tree, false, "List view");
+                }
+                });
             });
             if !compact {subtitle(ui,"Choose files, hunks, or individual lines to include in your commit.");}
 
@@ -161,7 +180,11 @@ impl Branchroom {
         }
         if compact {
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(PAPER()).inner_margin(16))
+                .frame(
+                    egui::Frame::new()
+                        .fill(PAPER())
+                        .inner_margin(if ui.available_height() < 560. { 8 } else { 16 }),
+                )
                 .show(ui, |ui| match self.compact_changes_tab {
                     0 => self.change_list(ui, ctx, &repo, writable),
                     1 => self.patch_view(ui, ctx, writable),
@@ -352,64 +375,27 @@ impl Branchroom {
         repo: &RepoState,
         writable: bool,
     ) {
-        ui.horizontal(|ui| {
-            section(ui, "CHANGED FILES");
-            ui.selectable_value(&mut self.files_tree, true, "Tree");
-            ui.selectable_value(&mut self.files_tree, false, "List");
-        });
+        let tight = ctx.content_rect().width() < 760. || ctx.content_rect().height() < 450.;
+        if !tight {
+            ui.horizontal(|ui| {
+                section(ui, "CHANGED FILES");
+                ui.selectable_value(&mut self.files_tree, true, "Tree");
+                ui.selectable_value(&mut self.files_tree, false, "List");
+            });
+        }
         ui.add(
             egui::TextEdit::singleline(&mut self.file_filter)
                 .desired_width(f32::INFINITY)
                 .hint_text("Filter files"),
         );
-        ui.horizontal_wrapped(|ui| {
-            let eligible: Vec<_> = repo
-                .changes
-                .iter()
-                .filter(|c| self.commit_lock_for(&c.path).is_none())
-                .collect();
-            let mut all = !eligible.is_empty()
-                && eligible
-                    .iter()
-                    .all(|c| c.index != ' ' && c.index != '?' && c.worktree == ' ');
-            let partial = !all && eligible.iter().any(|c| c.index != ' ' && c.index != '?');
-            if ui
-                .add_enabled(
-                    writable
-                        && !eligible.is_empty()
-                        && !repo.changes.iter().any(git::Change::conflict),
-                    egui::Checkbox::new(
-                        &mut all,
-                        if repo.commit_locks.is_empty() {
-                            "Include all files"
-                        } else {
-                            "Include unlocked files"
-                        },
-                    )
-                    .indeterminate(partial),
-                )
-                .on_disabled_hover_text("Wait for the current operation, resolve conflicts, or unlock files before including changes.")
-                .changed()
-            {
-                if all {
-                    self.execute(Task::StageUnlocked, ctx);
-                } else {
-                    self.run_git(
-                        if repo.head.is_empty() {
-                            &["read-tree", "--empty"]
-                        } else {
-                            &["reset"]
-                        },
-                        ctx,
-                    );
+        if !tight {
+            ui.horizontal_wrapped(|ui| {
+                self.include_all_files(ui, ctx, repo, writable);
+                if ui.button("View staged").clicked() {
+                    self.open_staged_diff();
                 }
-            }
-            if ui.button("View staged").clicked() {
-                self.diff_staged = true;
-                self.diff_refresh = true;
-                if !self.selected_path.is_empty() { self.compact_changes_tab = 1; }
-            }
-        });
+            });
+        }
         ui.add_space(8.);
         let files: Vec<_> = repo
             .changes
@@ -453,6 +439,62 @@ impl Branchroom {
                         self.change_row(ui, ctx, change, &change.path, writable);
                     }
                 });
+        }
+    }
+
+    fn include_all_files(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        repo: &RepoState,
+        writable: bool,
+    ) {
+        let eligible: Vec<_> = repo
+            .changes
+            .iter()
+            .filter(|c| self.commit_lock_for(&c.path).is_none())
+            .collect();
+        let mut all = !eligible.is_empty()
+            && eligible
+                .iter()
+                .all(|c| c.index != ' ' && c.index != '?' && c.worktree == ' ');
+        let partial = !all && eligible.iter().any(|c| c.index != ' ' && c.index != '?');
+        if ui
+            .add_enabled(
+                writable && !eligible.is_empty() && !repo.changes.iter().any(git::Change::conflict),
+                egui::Checkbox::new(
+                    &mut all,
+                    if repo.commit_locks.is_empty() {
+                        "Include all files"
+                    } else {
+                        "Include unlocked files"
+                    },
+                )
+                .indeterminate(partial),
+            )
+            .on_disabled_hover_text("Wait for the current operation, resolve conflicts, or unlock files before including changes.")
+            .changed()
+        {
+            if all {
+                self.execute(Task::StageUnlocked, ctx);
+            } else {
+                self.run_git(
+                    if repo.head.is_empty() {
+                        &["read-tree", "--empty"]
+                    } else {
+                        &["reset"]
+                    },
+                    ctx,
+                );
+            }
+        }
+    }
+
+    fn open_staged_diff(&mut self) {
+        self.diff_staged = true;
+        self.diff_refresh = true;
+        if !self.selected_path.is_empty() {
+            self.compact_changes_tab = 1;
         }
     }
 

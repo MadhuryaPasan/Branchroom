@@ -138,31 +138,79 @@ impl Branchroom {
                     .inner_margin(if short { 12 } else { 20 }),
             )
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Checkpoints").size(TEXT_HEADER).strong());
-                    if ui
-                        .add_enabled(writable, egui::Button::new("Save checkpoint…"))
-                        .clicked()
-                    {
-                        self.capture_open = true;
-                    }
-                    if ui
-                        .add_enabled(writable, egui::Button::new("Undo last action"))
-                        .on_hover_text(
-                            "Restore the state before the last Branchroom action · Ctrl+Z",
-                        )
-                        .clicked()
-                    {
-                        self.timeline_undo(false, ctx);
-                    }
-                    if ui
-                        .add_enabled(writable, egui::Button::new("Redo action"))
-                        .on_hover_text("Repeat the last undone Branchroom action · Ctrl+Shift+Z")
-                        .clicked()
-                    {
-                        self.timeline_undo(true, ctx);
-                    }
-                });
+                if short {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Checkpoints").size(TEXT_HEADER).strong());
+                        ui.menu_button("Recovery actions", |ui| {
+                            if ui
+                                .add_enabled(writable, egui::Button::new("Save checkpoint…"))
+                                .clicked()
+                            {
+                                self.capture_open = true;
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(writable, egui::Button::new("Undo last action"))
+                                .on_hover_text(
+                                    "Restore the state before the last Branchroom action · Ctrl+Z",
+                                )
+                                .clicked()
+                            {
+                                self.timeline_undo(false, ctx);
+                                ui.close();
+                            }
+                            if ui
+                                .add_enabled(writable, egui::Button::new("Redo action"))
+                                .on_hover_text(
+                                    "Repeat the last undone Branchroom action · Ctrl+Shift+Z",
+                                )
+                                .clicked()
+                            {
+                                self.timeline_undo(true, ctx);
+                                ui.close();
+                            }
+                            if ui.button("Shelve work").clicked() {
+                                self.form(
+                                    "Shelve work",
+                                    "Save included, working and untracked changes for later",
+                                    "git",
+                                    &["stash", "push", "--include-untracked", "-m"],
+                                    &[("Name", "")],
+                                    &[],
+                                );
+                                ui.close();
+                            }
+                        });
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new("Checkpoints").size(TEXT_HEADER).strong());
+                        if ui
+                            .add_enabled(writable, egui::Button::new("Save checkpoint…"))
+                            .clicked()
+                        {
+                            self.capture_open = true;
+                        }
+                        if ui
+                            .add_enabled(writable, egui::Button::new("Undo last action"))
+                            .on_hover_text(
+                                "Restore the state before the last Branchroom action · Ctrl+Z",
+                            )
+                            .clicked()
+                        {
+                            self.timeline_undo(false, ctx);
+                        }
+                        if ui
+                            .add_enabled(writable, egui::Button::new("Redo action"))
+                            .on_hover_text(
+                                "Repeat the last undone Branchroom action · Ctrl+Shift+Z",
+                            )
+                            .clicked()
+                        {
+                            self.timeline_undo(true, ctx);
+                        }
+                    });
+                }
                 if !short {
                     subtitle(
                         ui,
@@ -173,41 +221,82 @@ impl Branchroom {
                         "Checkpoints stay on this computer. They are not an off-device backup, and ignored files are not included.",
                     );
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.time_machine.filter)
-                            .desired_width(180.)
-                            .hint_text("Find checkpoints"),
-                    );
-                    for (label, value) in [
-                        ("Checkpoints", "Safety point"),
-                        ("Commits", "Commit"),
-                        ("Shelved", "Shelved work"),
-                        ("Discarded files", "Discarded file"),
-                    ] {
-                        let active = self.time_machine.filter == value;
-                        if ui.selectable_label(active, label).clicked() {
-                            self.time_machine.filter = if active { String::new() } else { value.into() };
-                        }
-                    }
-                    if ui.button("Shelve work").clicked() {
-                        self.form(
-                            "Shelve work",
-                            "Save included, working and untracked changes for later",
-                            "git",
-                            &["stash", "push", "--include-untracked", "-m"],
-                            &[("Name", "")],
-                            &[],
+                if short {
+                    ui.horizontal_wrapped(|ui| {
+                        let kinds = [
+                            ("All items", ""),
+                            ("Checkpoints", "Safety point"),
+                            ("Commits", "Commit"),
+                            ("Shelved", "Shelved work"),
+                            ("Discarded files", "Discarded file"),
+                        ];
+                        let selected = kinds
+                            .iter()
+                            .find(|(_, value)| *value == self.time_machine.filter)
+                            .map(|(label, _)| *label)
+                            .unwrap_or("All items");
+                        ui.menu_button(format!("Timeline view: {selected}"), |ui| {
+                            for (label, value) in kinds {
+                                if ui
+                                    .selectable_label(self.time_machine.filter == value, label)
+                                    .clicked()
+                                {
+                                    self.time_machine.filter = value.into();
+                                    ui.close();
+                                }
+                            }
+                        });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.time_machine.filter)
+                                .desired_width(120.)
+                                .hint_text("Find checkpoints"),
                         );
-                    }
-                    if self.settings.advanced_mode
-                        && ui
-                            .selectable_label(self.time_machine.advanced, "Advanced")
-                            .clicked()
-                    {
-                        self.time_machine.advanced = !self.time_machine.advanced;
-                    }
-                });
+                        if self.settings.advanced_mode
+                            && ui
+                                .selectable_label(self.time_machine.advanced, "Advanced")
+                                .clicked()
+                        {
+                            self.time_machine.advanced = !self.time_machine.advanced;
+                        }
+                    });
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.time_machine.filter)
+                                .desired_width(180.)
+                                .hint_text("Find checkpoints"),
+                        );
+                        for (label, value) in [
+                            ("Checkpoints", "Safety point"),
+                            ("Commits", "Commit"),
+                            ("Shelved", "Shelved work"),
+                            ("Discarded files", "Discarded file"),
+                        ] {
+                            let active = self.time_machine.filter == value;
+                            if ui.selectable_label(active, label).clicked() {
+                                self.time_machine.filter =
+                                    if active { String::new() } else { value.into() };
+                            }
+                        }
+                        if ui.button("Shelve work").clicked() {
+                            self.form(
+                                "Shelve work",
+                                "Save included, working and untracked changes for later",
+                                "git",
+                                &["stash", "push", "--include-untracked", "-m"],
+                                &[("Name", "")],
+                                &[],
+                            );
+                        }
+                        if self.settings.advanced_mode
+                            && ui
+                                .selectable_label(self.time_machine.advanced, "Advanced")
+                                .clicked()
+                        {
+                            self.time_machine.advanced = !self.time_machine.advanced;
+                        }
+                    });
+                }
             });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(PAPER()).inner_margin(16)).show(ui,|ui|{
             egui::ScrollArea::vertical().id_salt("action_timeline").show(ui,|ui|{

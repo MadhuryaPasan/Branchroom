@@ -64,6 +64,8 @@ impl Branchroom {
             );
             return;
         }
+        let loading_versions = self.receiver.is_some() && self.busy == "Loading conflict versions…";
+        let loading_detail = self.receiver.is_some() && self.busy == "Running operation…";
         surface().show(ui,|ui|{
             ui.label(RichText::new(&self.conflict_path).strong());
             subtitle(ui,"Review both versions and edit the result. The previous file is saved before a resolution is written");
@@ -74,21 +76,21 @@ impl Branchroom {
             });
             if ui.available_width()>=850. {
                 ui.columns(3,|columns|{
-                    conflict_version(&mut columns[0],"Current branch",&self.conflict_versions[1]);
-                    conflict_version(&mut columns[1],"Incoming branch",&self.conflict_versions[2]);
+                    conflict_version(&mut columns[0],"Current branch",&self.conflict_versions[1],loading_versions);
+                    conflict_version(&mut columns[1],"Incoming branch",&self.conflict_versions[2],loading_versions);
                     columns[2].label(RichText::new("Result").strong());
                     egui::ScrollArea::both().id_salt("resolution_editor").max_height(300.).show(&mut columns[2],|ui|{ui.add(egui::TextEdit::multiline(&mut self.conflict_content).hint_text("Resolved file contents").code_editor().desired_rows(14).desired_width(f32::INFINITY));});
                 });
             } else {
-                egui::CollapsingHeader::new("Current branch version").show(ui,|ui|conflict_version(ui,"Current branch",&self.conflict_versions[1]));
-                egui::CollapsingHeader::new("Incoming branch version").show(ui,|ui|conflict_version(ui,"Incoming branch",&self.conflict_versions[2]));
+                egui::CollapsingHeader::new("Current branch version").show(ui,|ui|conflict_version(ui,"Current branch",&self.conflict_versions[1],loading_versions));
+                egui::CollapsingHeader::new("Incoming branch version").show(ui,|ui|conflict_version(ui,"Incoming branch",&self.conflict_versions[2],loading_versions));
                 ui.label(RichText::new("Result").strong());
                 egui::ScrollArea::both().id_salt("resolution_editor").max_height(300.).show(ui,|ui|{ui.add(egui::TextEdit::multiline(&mut self.conflict_content).hint_text("Resolved file contents").code_editor().desired_rows(12).desired_width(f32::INFINITY));});
             }
             if ui.button("Save result and include file").clicked(){self.pending=Some(Pending{title:"Save conflict resolution".into(),explanation:format!("Save a recovery copy, write your edited result to {} and include it in the next commit. Conflict markers and externally changed files will be rejected.",self.conflict_path),task:Task::Resolve{path:self.conflict_path.clone(),content:self.conflict_content.clone(),original:self.conflict_original.clone()}});}
             egui::CollapsingHeader::new("Advanced: inspect one version").show(ui,|ui|{
                 ui.horizontal_wrapped(|ui|{for(index,label)in["Branched off here","Current branch","Incoming branch"].iter().enumerate(){if ui.selectable_value(&mut self.conflict_side,index,*label).clicked(){self.detail_title=label.to_string();self.read("git",process::strings(&["show",&format!(":{}:{}",index+1,self.conflict_path)]),ctx);}}});
-                conflict_version(ui,"Selected version",&self.detail);
+                conflict_version(ui,"Selected version",&self.detail,loading_detail);
             });
         });
         ui.add_space(10.);
@@ -178,7 +180,22 @@ impl Branchroom {
         });
         ui.add_space(20.);
         if let Some(repo) = self.repo.clone() {
-            surface().show(ui, |ui| {
+            if ui.available_width() >= 1000. {
+                ui.columns(2, |columns| {
+                    self.remote_settings(&mut columns[0], &repo);
+                    self.worktree_settings(&mut columns[1], &repo);
+                });
+            } else {
+                self.remote_settings(ui, &repo);
+                ui.add_space(20.);
+                self.worktree_settings(ui, &repo);
+            }
+        }
+    }
+
+    fn remote_settings(&mut self, ui: &mut egui::Ui, repo: &RepoState) {
+        surface().show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
                 ui.label(RichText::new("Remotes").size(18.).strong());
                 ui.add_space(12.);
                 if repo.remotes.is_empty() {
@@ -295,17 +312,65 @@ impl Branchroom {
                     });
                 });
             });
-            ui.add_space(20.);
-            surface().show(ui,|ui|{
-                ui.label(RichText::new("Independent parallel workspaces").size(18.).strong());ui.add_space(12.);
-                ui.add(egui::Label::new(RichText::new(&repo.worktrees).monospace()).wrap().selectable(true));ui.add_space(12.);
-                ui.horizontal_wrapped(|ui|{
-                    if ui.button("Add branch parallel workspace").clicked(){self.form("Add branch parallel workspace","Check out an existing branch in a new directory.","git",&["worktree","add"],&[("New directory",""),("Branch","")],&[]);}
-                    if ui.button("Open parallel workspace in IDE…").clicked()&&let Some(path)=rfd::FileDialog::new().pick_folder(){let result=self.settings.open(&path,self.settings.ide_for(&repo.root));self.report(result);}
-                    ui.menu_button("Manage parallel workspaces",|ui|{if ui.button(RichText::new("Remove clean parallel workspace…").color(DANGER())).clicked(){self.form("Remove clean parallel workspace","Git refuses dirty, locked, and main worktrees. The selected directory will be removed.","git",&["worktree","remove"],&[("Parallel workspace directory","")],&[]);ui.close();}});
+    }
+
+    fn worktree_settings(&mut self, ui: &mut egui::Ui, repo: &RepoState) {
+        surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(
+                RichText::new("Independent parallel workspaces")
+                    .size(18.)
+                    .strong(),
+            );
+            ui.add_space(12.);
+            if repo.worktrees.is_empty() {
+                subtitle(
+                    ui,
+                    "No parallel workspaces are registered for this repository.",
+                );
+            } else {
+                ui.add(
+                    egui::Label::new(RichText::new(&repo.worktrees).monospace())
+                        .wrap()
+                        .selectable(true),
+                );
+            }
+            ui.add_space(12.);
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("Add branch parallel workspace").clicked() {
+                    self.form(
+                        "Add branch parallel workspace",
+                        "Check out an existing branch in a new directory.",
+                        "git",
+                        &["worktree", "add"],
+                        &[("New directory", ""), ("Branch", "")],
+                        &[],
+                    );
+                }
+                if ui.button("Open parallel workspace in IDE…").clicked()
+                    && let Some(path) = rfd::FileDialog::new().pick_folder()
+                {
+                    let result = self.settings.open(&path, self.settings.ide_for(&repo.root));
+                    self.report(result);
+                }
+                ui.menu_button("Manage parallel workspaces", |ui| {
+                    if ui
+                        .button(RichText::new("Remove clean parallel workspace…").color(DANGER()))
+                        .clicked()
+                    {
+                        self.form(
+                            "Remove clean parallel workspace",
+                            "Git refuses dirty, locked, and main worktrees. The selected directory will be removed.",
+                            "git",
+                            &["worktree", "remove"],
+                            &[("Parallel workspace directory", "")],
+                            &[],
+                        );
+                        ui.close();
+                    }
                 });
             });
-        }
+        });
     }
     pub(super) fn github(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         heading(
@@ -351,6 +416,7 @@ impl Branchroom {
             "Inspect, maintain, or recover a repository with Git's complete command surface.",
         );
         surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             section(ui, "INSPECT REPOSITORY");
             ui.add_space(8.);
             ui.horizontal_wrapped(|ui| {
@@ -456,7 +522,44 @@ impl Branchroom {
             "Settings",
             "Make the workspace and project launchers fit the way you work.",
         );
+        if ui.available_width() >= 1000. {
+            ui.columns(2, |columns| {
+                self.appearance_settings(&mut columns[0]);
+                columns[0].add_space(12.);
+                self.about_settings(&mut columns[0]);
+                self.project_ide_settings(&mut columns[1]);
+                columns[1].add_space(20.);
+                self.ide_launcher_settings(&mut columns[1]);
+            });
+        } else {
+            self.appearance_settings(ui);
+            ui.add_space(12.);
+            self.about_settings(ui);
+            ui.add_space(20.);
+            self.project_ide_settings(ui);
+            ui.add_space(20.);
+            self.ide_launcher_settings(ui);
+        }
+        ui.add_space(20.);
+        subtitle(ui, "Preferences save automatically as you change them.");
+        ui.add_space(12.);
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!(
+                    "Preferences file: {}",
+                    branchroom::settings::settings_path().display()
+                ))
+                .size(12.)
+                .color(MUTED()),
+            )
+            .wrap()
+            .selectable(true),
+        );
+    }
+
+    fn appearance_settings(&mut self, ui: &mut egui::Ui) {
         surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.label(RichText::new("Workspace appearance").size(18.).strong());
             if ui
                 .checkbox(
@@ -522,7 +625,9 @@ impl Branchroom {
                 }
             });
         });
-        ui.add_space(12.);
+    }
+
+    fn about_settings(&self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("About Branchroom").show(ui, |ui| {
             ui.label(format!(
                 "Branchroom {} · {} / {}",
@@ -541,8 +646,11 @@ impl Branchroom {
             ui.hyperlink_to("Git installation", "https://git-scm.com/downloads");
             ui.hyperlink_to("GitHub CLI installation", "https://cli.github.com/");
         });
-        ui.add_space(20.);
+    }
+
+    fn project_ide_settings(&mut self, ui: &mut egui::Ui) {
         surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
             ui.label(RichText::new("Project IDE").size(18.).strong());
             ui.add_space(12.);
             ui.horizontal_wrapped(|ui| {
@@ -590,39 +698,91 @@ impl Branchroom {
                     .ide = selected.checked_sub(1);
             }
         });
-        ui.add_space(20.);
-        surface().show(ui,|ui|{
-            ui.label(RichText::new("IDE launchers").size(18.).strong());ui.add_space(12.);
-            for(index,ide)in self.settings.ides.iter_mut().enumerate(){egui::CollapsingHeader::new(&ide.name).id_salt(("ide",index)).show(ui,|ui|{
-                ui.label("Display name");ui.add(egui::TextEdit::singleline(&mut ide.name).desired_width(300.));ui.label("Executable path");ui.horizontal_wrapped(|ui|{ui.add(egui::TextEdit::singleline(&mut ide.executable).desired_width(420.));if ui.button("Browse executable…").clicked()&&let Some(path)=rfd::FileDialog::new().pick_file(){ide.executable=path.display().to_string();}});
-                subtitle(ui,&format!("Arguments: {}",serde_json::to_string(&ide.arguments).unwrap_or_default()));
-            });}
-            ui.add_space(12.);egui::CollapsingHeader::new("Add a custom IDE").show(ui,|ui|{
-                ui.label("IDE name");ui.text_edit_singleline(&mut self.ide_name);ui.label("Executable path");ui.horizontal_wrapped(|ui|{ui.add(egui::TextEdit::singleline(&mut self.ide_executable).desired_width(420.));if ui.button("Browse…").clicked()&&let Some(path)=rfd::FileDialog::new().pick_file(){self.ide_executable=path.display().to_string();}});
-                ui.label("Arguments as JSON · {path} becomes the project directory");ui.text_edit_singleline(&mut self.ide_arguments);
-                if ui.button("Add launcher").clicked(){match serde_json::from_str::<Vec<String>>(&self.ide_arguments){Ok(arguments)if !self.ide_name.trim().is_empty()&&!self.ide_executable.trim().is_empty()=>{self.settings.ides.push(branchroom::settings::Ide{name:self.ide_name.clone(),executable:self.ide_executable.clone(),arguments});},_=>self.report(Err("Enter an IDE name, executable path, and JSON argument array before adding the launcher.".into()))}}
+    }
+
+    fn ide_launcher_settings(&mut self, ui: &mut egui::Ui) {
+        surface().show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(RichText::new("IDE launchers").size(18.).strong());
+            ui.add_space(12.);
+            for (index, ide) in self.settings.ides.iter_mut().enumerate() {
+                egui::CollapsingHeader::new(&ide.name)
+                    .id_salt(("ide", index))
+                    .show(ui, |ui| {
+                        ui.label("Display name");
+                        ui.add(egui::TextEdit::singleline(&mut ide.name).desired_width(300.));
+                        ui.label("Executable path");
+                        ui.horizontal_wrapped(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut ide.executable)
+                                    .desired_width(420.),
+                            );
+                            if ui.button("Browse executable…").clicked()
+                                && let Some(path) = rfd::FileDialog::new().pick_file()
+                            {
+                                ide.executable = path.display().to_string();
+                            }
+                        });
+                        subtitle(
+                            ui,
+                            &format!(
+                                "Arguments: {}",
+                                serde_json::to_string(&ide.arguments).unwrap_or_default()
+                            ),
+                        );
+                    });
+            }
+            ui.add_space(12.);
+            egui::CollapsingHeader::new("Add a custom IDE").show(ui, |ui| {
+                ui.label("IDE name");
+                ui.text_edit_singleline(&mut self.ide_name);
+                ui.label("Executable path");
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.ide_executable).desired_width(420.),
+                    );
+                    if ui.button("Browse…").clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
+                    {
+                        self.ide_executable = path.display().to_string();
+                    }
+                });
+                ui.label("Arguments as JSON · {path} becomes the project directory");
+                ui.text_edit_singleline(&mut self.ide_arguments);
+                if ui.button("Add launcher").clicked() {
+                    match serde_json::from_str::<Vec<String>>(&self.ide_arguments) {
+                        Ok(arguments)
+                            if !self.ide_name.trim().is_empty()
+                                && !self.ide_executable.trim().is_empty() =>
+                        {
+                            self.settings.ides.push(branchroom::settings::Ide {
+                                name: self.ide_name.clone(),
+                                executable: self.ide_executable.clone(),
+                                arguments,
+                            });
+                        }
+                        _ => self.report(Err(
+                            "Enter an IDE name, executable path, and JSON argument array before adding the launcher."
+                                .into(),
+                        )),
+                    }
+                }
             });
         });
-        ui.add_space(20.);
-        subtitle(ui, "Preferences save automatically as you change them.");
-        ui.add_space(12.);
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!(
-                    "Preferences file: {}",
-                    branchroom::settings::settings_path().display()
-                ))
-                .size(12.)
-                .color(MUTED()),
-            )
-            .wrap()
-            .selectable(true),
-        );
     }
 }
 
-fn conflict_version(ui: &mut egui::Ui, label: &str, text: &str) {
+fn conflict_version(ui: &mut egui::Ui, label: &str, text: &str, loading: bool) {
     ui.label(RichText::new(label).strong());
+    let text = if text.is_empty() {
+        if loading {
+            "Loading version…"
+        } else {
+            "No file content in this version."
+        }
+    } else {
+        text
+    };
     egui::ScrollArea::both()
         .id_salt(("conflict_version", label))
         .max_height(300.)

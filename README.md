@@ -57,7 +57,7 @@ The executable is unsigned. A signed installer, auto-updater, native screen-read
 | Command center | Reviewed noninteractive Git/gh arguments, reflog, blame, tags, submodule and maintenance actions |
 | Settings | Density, zoom, auto-refresh, project baseline, default/project/custom IDEs, tool discovery, version diagnostics |
 
-At narrow widths or high zoom, navigation moves to **Workspace**, inspectors become windows, and **Changes** has Files / Diff / Commit tabs. Selecting a file opens Diff. In a wide window, files, composer, and diff remain visible together. Secondary Changes actions, including commit locks, live in **Actions**.
+At narrow widths or high zoom, the sidebar is replaced by a **Modes** menu with every workspace and settings destination, inspectors become windows, and **Changes** has Files / Diff / Commit tabs. Selecting a file opens Diff. In a wide window, files, composer, and diff remain visible together. Secondary Changes actions, including commit locks, live in **Actions**.
 
 Keyboard: **Ctrl+O** open, **Ctrl+R** refresh, **Ctrl+B** branches, **Ctrl+1/2/3** Changes/History/Snapshots, **Ctrl+G** commit summary, **Ctrl+Enter** review commit, **Ctrl+K** commands, **Escape** dismiss. Tab reaches native controls. The status bar provides zoom and the activity log.
 
