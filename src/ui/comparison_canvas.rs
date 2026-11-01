@@ -174,108 +174,112 @@ impl Branchroom {
                 });
             }
         }
-        let w = ui.available_width();
-        ui.set_max_width(w);
+        let zoom = ctx.zoom_factor().max(1.);
+        let viewport_width = ctx.content_rect().width() / zoom;
+        let navigation_width = if viewport_width < 760. || zoom > 1. {
+            0.
+        } else {
+            240.
+        };
+        let inspector_width =
+            if viewport_width >= 1200. && self.inspector_open && !self.selected_commit.is_empty() {
+                340.
+            } else {
+                0.
+            };
+        let viewport_content_width =
+            (viewport_width - navigation_width - inspector_width - 24.).max(220.);
+        let content_width = ui.max_rect().width().min(viewport_content_width).max(0.);
+        ui.set_min_width(0.);
+        ui.set_max_width(content_width);
         ui.style_mut().spacing.scroll.floating = false;
         egui::ScrollArea::vertical()
             .id_salt(("comparison_workspace", &key))
-            .auto_shrink([false, false])
+            .auto_shrink([true, false])
+            .max_width(content_width)
             .show(ui, |ui| {
-                ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                ui.set_min_width(0.);
+                ui.set_max_width(content_width);
                 heading(
                     ui,
                     "Compare branches",
                     "See which commits and files differ between two branch tips.",
                 );
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Base branch");
-                    let base_picker = egui::ComboBox::from_id_salt("compare_base")
-                        .selected_text(
-                            self.compare_base
-                                .strip_prefix("refs/heads/")
-                                .or_else(|| self.compare_base.strip_prefix("refs/remotes/"))
-                                .unwrap_or(&self.compare_base),
-                        )
-                        .width(180.)
-                        .show_ui(ui, |ui| {
-                            for branch in &repo.branches {
-                                ui.selectable_value(
-                                    &mut self.compare_base,
-                                    format!(
-                                        "refs/{}/{}",
-                                        if branch.remote { "remotes" } else { "heads" },
-                                        branch.name
-                                    ),
-                                    &branch.name,
-                                );
-                            }
-                            for commit in &repo.commits {
-                                ui.selectable_value(
-                                    &mut self.compare_base,
-                                    commit.id.clone(),
-                                    format!("{} {}", short(&commit.id), commit.subject),
-                                );
-                            }
-                        });
-                    base_picker.response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::ComboBox,
-                            true,
-                            format!("Base branch: {}", self.compare_base),
-                        )
-                    });
-                    ui.label("Compare with");
-                    let compare_picker = egui::ComboBox::from_id_salt("compare_head")
-                        .selected_text(
-                            self.compare_head
-                                .strip_prefix("refs/heads/")
-                                .or_else(|| self.compare_head.strip_prefix("refs/remotes/"))
-                                .unwrap_or(&self.compare_head),
-                        )
-                        .width(180.)
-                        .show_ui(ui, |ui| {
-                            for branch in &repo.branches {
-                                ui.selectable_value(
-                                    &mut self.compare_head,
-                                    format!(
-                                        "refs/{}/{}",
-                                        if branch.remote { "remotes" } else { "heads" },
-                                        branch.name
-                                    ),
-                                    &branch.name,
-                                );
-                            }
-                            for commit in &repo.commits {
-                                ui.selectable_value(
-                                    &mut self.compare_head,
-                                    commit.id.clone(),
-                                    format!("{} {}", short(&commit.id), commit.subject),
-                                );
-                            }
-                        });
-                    compare_picker.response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::Role::ComboBox,
-                            true,
-                            format!("Compare with: {}", self.compare_head),
-                        )
-                    });
-                    if self.selected_commit.is_empty() {
-                        ui.add_sized(
-                            [220., 36.],
-                            egui::Label::new(
-                                RichText::new("Select a commit to view details").color(MUTED()),
-                            )
-                            .wrap(),
-                        );
-                    } else if ctx.content_rect().width() < 1200. {
-                        ui.toggle_value(&mut self.inspector_drawer_open, "Commit details");
+                surface().show(ui, |ui| {
+                    ui.label(RichText::new("Choose two branch tips").size(TEXT_SUBHEAD).strong());
+                    subtitle(ui, "The base is the starting point. The compare branch is the version you want to inspect.");
+                    ui.add_space(10.);
+                    let control_width = if ui.available_width() >= 760. {
+                        ((ui.available_width() - 12.) / 2.).max(220.)
                     } else {
-                        ui.checkbox(&mut self.inspector_open, "Commit details");
-                    }
+                        ui.available_width()
+                    };
+                    ui.horizontal_wrapped(|ui| {
+                        for (index, _) in [0, 1].iter().enumerate() {
+                            let (label, value, id) = if index == 0 {
+                                ("Base branch", &mut self.compare_base, "compare_base")
+                            } else {
+                                ("Compare with", &mut self.compare_head, "compare_head")
+                            };
+                            ui.vertical(|ui| {
+                            ui.set_width(control_width);
+                            ui.label(label);
+                            ui.label(RichText::new("Select a branch or commit").size(TEXT_CAPTION).color(MUTED()));
+                            let selected = value
+                                .strip_prefix("refs/heads/")
+                                .or_else(|| value.strip_prefix("refs/remotes/"))
+                                .unwrap_or(value)
+                                .to_owned();
+                            let picker = egui::ComboBox::from_id_salt(id)
+                                .selected_text(selected)
+                                .width(ui.available_width().max(180.))
+                                .show_ui(ui, |ui| {
+                                    for branch in &repo.branches {
+                                        ui.selectable_value(
+                                            value,
+                                            format!(
+                                                "refs/{}/{}",
+                                                if branch.remote { "remotes" } else { "heads" },
+                                                branch.name
+                                            ),
+                                            &branch.name,
+                                        );
+                                    }
+                                    for commit in &repo.commits {
+                                        ui.selectable_value(
+                                            value,
+                                            commit.id.clone(),
+                                            format!("{} {}", short(&commit.id), commit.subject),
+                                        );
+                                    }
+                                });
+                            picker.response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::Role::ComboBox,
+                                    true,
+                                    format!("{label}: {value}"),
+                                )
+                            });
+                            });
+                        }
+                    });
+                    ui.add_space(10.);
+                    ui.horizontal_wrapped(|ui| {
+                        if self.selected_commit.is_empty() {
+                            ui.label(RichText::new("Select a commit to view details").color(MUTED()));
+                        } else if ctx.content_rect().width() < 1200. {
+                            ui.toggle_value(&mut self.inspector_drawer_open, "Commit details");
+                        } else {
+                            ui.checkbox(&mut self.inspector_open, "Commit details");
+                        }
+                    });
                 });
                 if ctx.content_rect().width() < 1200. && self.inspector_drawer_open {
-                    surface().show(ui, |ui| self.commit_inspector(ui, ctx));
+                    surface().show(ui, |ui| {
+                        ui.set_width(content_width);
+                        ui.set_max_width(content_width);
+                        self.commit_inspector(ui, ctx);
+                    });
                     ui.add_space(12.);
                 }
 
@@ -305,57 +309,68 @@ impl Branchroom {
                             .or_else(|| self.compare_head.strip_prefix("refs/remotes/"))
                             .unwrap_or(&self.compare_head);
                         surface().show(ui, |ui| {
-                            section(ui, "COMPARISON SUMMARY");
-                            ui.add_space(8.);
                             ui.horizontal_wrapped(|ui| {
-                                badge(ui, "BASE", MUTED());
-                                ui.label(RichText::new(base_name).strong());
-                                ui.label("compared with");
-                                badge(ui, "COMPARE", ACCENT());
-                                ui.label(RichText::new(compare_name).strong());
+                                ui.label(RichText::new("Comparison summary").size(TEXT_SUBHEAD).strong());
+                                ui.add_space(4.);
+                                badge(ui, "READY", SUCCESS());
                             });
                             ui.add_space(8.);
-                            ui.horizontal_wrapped(|ui| {
-                                badge(
-                                    ui,
-                                    &format!(
-                                        "{} unique {}",
-                                        data.left.len(),
-                                        if data.left.len() == 1 {
-                                            "commit"
-                                        } else {
-                                            "commits"
-                                        }
-                                    ),
-                                    MUTED(),
-                                );
-                                badge(
-                                    ui,
-                                    &format!(
-                                        "{} unique {}",
-                                        data.right.len(),
-                                        if data.right.len() == 1 {
-                                            "commit"
-                                        } else {
-                                            "commits"
-                                        }
-                                    ),
-                                    SUCCESS(),
-                                );
-                                if data.ancestor.is_empty() {
-                                    ui.colored_label(
-                                        WARNING(),
-                                        "No common ancestor; these histories are unrelated.",
-                                    );
-                                } else {
-                                    ui.label(format!(
-                                        "Shared history begins at {}",
-                                        short(&data.ancestor)
-                                    ));
+                            let changed_files = data.files.len().to_string();
+                            let metrics = [
+                                ("Base", base_name, "starting point", MUTED()),
+                                ("Compare", compare_name, "branch tip", ACCENT()),
+                                ("Changed files", changed_files.as_str(), "between the tips", WARNING()),
+                            ];
+                            let metric = |ui: &mut egui::Ui, label: &str, value: &str, detail: &str, color: Color32| {
+                                    egui::Frame::new()
+                                        .fill(RAISED())
+                                        .corner_radius(6)
+                                        .inner_margin(egui::Margin::symmetric(10, 8))
+                                        .show(ui, |ui| {
+                                            ui.label(RichText::new(label).size(TEXT_CAPTION).color(MUTED()).strong());
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(value).size(TEXT_BODY).strong().color(color),
+                                                )
+                                                .truncate(),
+                                            )
+                                            .on_hover_text(value);
+                                            ui.label(RichText::new(detail).size(TEXT_CAPTION).color(MUTED()));
+                                        });
+                            };
+                            if ui.available_width() >= 760. {
+                                ui.columns(3, |columns| {
+                                    for (column, (label, value, detail, color)) in
+                                        columns.iter_mut().zip(metrics)
+                                    {
+                                        metric(column, label, value, detail, color);
+                                    }
+                                });
+                            } else {
+                                for (label, value, detail, color) in metrics {
+                                    metric(ui, label, value, detail, color);
                                 }
-                            });
+                            }
+                            ui.add_space(8.);
+                            if data.ancestor.is_empty() {
+                                ui.colored_label(
+                                    WARNING(),
+                                    "No common ancestor; these histories are unrelated.",
+                                );
+                            } else {
+                                ui.label(format!(
+                                    "Shared history begins at {}",
+                                    short(&data.ancestor)
+                                ));
+                            }
                         });
                         ui.add_space(12.);
+                        surface().show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new("History split").size(TEXT_SUBHEAD).strong());
+                            subtitle(ui, "Commits that exist only on one side of the comparison.");
+                        });
+                        ui.add_space(4.);
                         let diagram_height = 126.;
                         let (diagram, _) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), diagram_height),
@@ -431,9 +446,12 @@ impl Branchroom {
                                 INK(),
                             );
                         }
+                        });
 
                         let mut show_commit_list =
                             |ui: &mut egui::Ui, title: &str, commits: &[(String, String)]| {
+                                let list_height =
+                                    (ui.ctx().content_rect().height() * 0.42).clamp(280., 440.);
                                 surface().show(ui, |ui| {
                                     egui::CollapsingHeader::new(
                                         RichText::new(title).size(TEXT_SUBHEAD).strong(),
@@ -447,7 +465,9 @@ impl Branchroom {
                                         } else {
                                             egui::ScrollArea::vertical()
                                                 .id_salt(("compare_commits", title))
-                                                .max_height(240.)
+                                                .auto_shrink([false, true])
+                                                .min_scrolled_height(40. * 4.)
+                                                .max_height(list_height)
                                                 .show_rows(ui, 40., commits.len(), |ui, range| {
                                                     for i in range {
                                                         let (id, subject) = &commits[i];
@@ -483,6 +503,63 @@ impl Branchroom {
                                     });
                                 });
                             };
+                        surface().show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("Files changed between branches").size(TEXT_SUBHEAD).strong());
+                                badge(ui, &data.files.len().to_string(), WARNING());
+                            });
+                            subtitle(ui, "Start here to inspect the actual file-level impact of this comparison.");
+                            if data.files.is_empty() {
+                                subtitle(
+                                    ui,
+                                    if self.preview_mode {
+                                        "File differences load in a live repository."
+                                    } else {
+                                        "These branch tips have the same file content."
+                                    },
+                                );
+                            } else {
+                                let row_height = 34.;
+                                let row_width =
+                                    (ui.clip_rect().right() - ui.min_rect().left() - 24.)
+                                        .max(200.);
+                                let max_height =
+                                    (ui.ctx().content_rect().height() * 0.48).clamp(300., 520.);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("compare_changed_files")
+                                    .auto_shrink([false, true])
+                                    .min_scrolled_height(row_height * 4.)
+                                    .max_height(max_height)
+                                    .show_rows(ui, row_height, data.files.len(), |ui, range| {
+                                        for index in range {
+                                            let file = &data.files[index];
+                                            let response = ui
+                                                .with_layout(
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.add_sized(
+                                                            [row_width, row_height],
+                                                            egui::Button::selectable(
+                                                                self.selected_path == file.path,
+                                                                file.label(),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                    },
+                                                )
+                                                .inner
+                                                .on_hover_text(&file.path);
+                                            if response.clicked() {
+                                                self.selected_path = file.path.clone();
+                                                selected_file = Some(file.path.clone());
+                                            }
+                                        }
+                                    });
+                            }
+                        });
+                        ui.add_space(12.);
                         let available_width = ui.available_width();
                         if available_width >= 900. {
                             ui.columns(2, |columns| {
@@ -502,62 +579,6 @@ impl Branchroom {
                             ui.add_space(8.);
                             show_commit_list(ui, &format!("Only in {compare_name}"), &data.right);
                         }
-                        ui.add_space(12.);
-                        surface().show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new("Files changed between branches")
-                                        .size(TEXT_SUBHEAD)
-                                        .strong(),
-                                );
-                                badge(ui, &data.files.len().to_string(), MUTED());
-                            });
-                            subtitle(ui, "Files changed between the two selected branch tips.");
-                            if data.files.is_empty() {
-                                subtitle(
-                                    ui,
-                                    if self.preview_mode {
-                                        "File differences load in a live repository."
-                                    } else {
-                                        "These branch tips have the same file content."
-                                    },
-                                );
-                            } else {
-                                let row_height = 34.;
-                                let max_height = ui.available_height().max(240.);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("compare_changed_files")
-                                    .auto_shrink([false, false])
-                                    .max_height(max_height)
-                                    .show_rows(ui, row_height, data.files.len(), |ui, range| {
-                                        for index in range {
-                                            let file = &data.files[index];
-                                            let response = ui
-                                                .with_layout(
-                                                    egui::Layout::left_to_right(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        ui.add_sized(
-                                                            [ui.available_width(), row_height],
-                                                            egui::Button::selectable(
-                                                                self.selected_path == file.path,
-                                                                file.label(),
-                                                            )
-                                                            .truncate(),
-                                                        )
-                                                    },
-                                                )
-                                                .inner
-                                                .on_hover_text(&file.path);
-                                            if response.clicked() {
-                                                self.selected_path = file.path.clone();
-                                                selected_file = Some(file.path.clone());
-                                            }
-                                        }
-                                    });
-                            }
-                        });
                     }
                 }
                 if let Some(id) = selected {

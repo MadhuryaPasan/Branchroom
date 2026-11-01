@@ -2024,8 +2024,8 @@ fn compare_screen_names_each_branch_and_commit_direction() {
             .get_by_label("Files changed between branches")
             .rect()
             .top()
-            > harness.get_by_label("Only in main").rect().top(),
-        "Changed files should follow the branch-specific commit lists"
+            < harness.get_by_label("Only in main").rect().top(),
+        "Changed files should lead the branch-specific commit lists"
     );
 }
 
