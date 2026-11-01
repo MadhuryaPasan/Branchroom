@@ -233,56 +233,58 @@ impl Branchroom {
                     }
                 });
             });
-        egui::Panel::bottom("workspace_status")
-            .exact_size(44.)
-            .frame(egui::Frame::new().fill(SIDEBAR()).inner_margin(6))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    let state = if self.receiver.is_some() {
-                        self.busy.as_str()
-                    } else if self.error {
-                        "Operation needs attention"
-                    } else {
-                        self.output
-                            .lines()
-                            .next()
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("Ready")
-                    };
-                    ui.add_sized(
-                        [if compact { 120. } else { 300. }, 22.],
-                        egui::Label::new(RichText::new(state).color(if self.error {
-                            DANGER()
+        if !self.activity_open {
+            egui::Panel::bottom("workspace_status")
+                .exact_size(44.)
+                .frame(egui::Frame::new().fill(SIDEBAR()).inner_margin(6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let state = if self.receiver.is_some() {
+                            self.busy.as_str()
+                        } else if self.error {
+                            "Operation needs attention"
                         } else {
-                            MUTED()
-                        }))
-                        .truncate(),
-                    )
-                    .on_hover_text(state);
-                    if self.receiver.is_some() {
-                        ui.add(egui::Spinner::new().size(14.).color(ACCENT()))
-                            .widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::Role::ProgressIndicator,
-                                    true,
-                                    "Operation in progress",
-                                )
-                            });
-                        if ui.button("Cancel operation").clicked()
-                            && let Some(token) = &self.cancellation
-                        {
-                            token.store(true, std::sync::atomic::Ordering::Relaxed);
+                            self.output
+                                .lines()
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or("Ready")
+                        };
+                        ui.add_sized(
+                            [if compact { 120. } else { 300. }, 22.],
+                            egui::Label::new(RichText::new(state).color(if self.error {
+                                DANGER()
+                            } else {
+                                MUTED()
+                            }))
+                            .truncate(),
+                        )
+                        .on_hover_text(state);
+                        if self.receiver.is_some() {
+                            ui.add(egui::Spinner::new().size(14.).color(ACCENT()))
+                                .widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::Role::ProgressIndicator,
+                                        true,
+                                        "Operation in progress",
+                                    )
+                                });
+                            if ui.button("Cancel operation").clicked()
+                                && let Some(token) = &self.cancellation
+                            {
+                                token.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
-                    }
-                    if ui
-                        .selectable_label(self.activity_open, "Activity log")
-                        .clicked()
-                    {
-                        self.activity_open = !self.activity_open;
-                    }
+                        if ui
+                            .selectable_label(self.activity_open, "Activity log")
+                            .clicked()
+                        {
+                            self.activity_open = true;
+                        }
+                    });
                 });
-            });
-        if self.receiver.is_some() {
+        }
+        if self.receiver.is_some() && !self.activity_open {
             let progress = self
                 .transfer_progress
                 .lock()
@@ -323,11 +325,55 @@ impl Branchroom {
         self.graph_preview_bar(ui, ctx);
         if self.activity_open {
             egui::Panel::bottom("activity_drawer")
+                .size_range(120.0..=260.0)
                 .resizable(true)
                 .default_size(150.)
+                .frame(
+                    egui::Frame::new()
+                        .fill(SURFACE())
+                        .stroke(egui::Stroke::new(1., LINE()))
+                        .inner_margin(12),
+                )
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         section(ui, "Activity log");
+                        let state = if self.receiver.is_some() {
+                            self.busy.as_str()
+                        } else if self.error {
+                            "Operation needs attention"
+                        } else {
+                            self.output
+                                .lines()
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or("Ready")
+                        };
+                        let state_width = ui.available_width().clamp(60., 220.);
+                        ui.add_sized(
+                            [state_width, 22.],
+                            egui::Label::new(RichText::new(state).color(if self.error {
+                                DANGER()
+                            } else {
+                                MUTED()
+                            }))
+                            .truncate(),
+                        )
+                        .on_hover_text(state);
+                        if self.receiver.is_some() {
+                            ui.add(egui::Spinner::new().size(14.).color(ACCENT()))
+                                .widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::Role::ProgressIndicator,
+                                        true,
+                                        "Operation in progress",
+                                    )
+                                });
+                            if ui.button("Cancel operation").clicked()
+                                && let Some(token) = &self.cancellation
+                            {
+                                token.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
                         if ui.button("Copy output").clicked() {
                             ctx.copy_text(self.output.clone());
                         }
@@ -335,12 +381,18 @@ impl Branchroom {
                             self.activity_open = false;
                         }
                     });
-                    egui::ScrollArea::both().show(ui, |ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&self.output).monospace())
-                                .selectable(true),
-                        );
-                    });
+                    let has_output = self.error
+                        || !matches!(self.output.trim(), "" | "Ready" | "Repository ready");
+                    if has_output {
+                        egui::ScrollArea::both().show(ui, |ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(&self.output).monospace())
+                                    .selectable(true),
+                            );
+                        });
+                    } else {
+                        subtitle(ui, "Repository activity and command output appear here.");
+                    }
                 });
         }
         if ctx.content_rect().width() >= 1000. {
@@ -348,27 +400,48 @@ impl Branchroom {
                 .default_size(200.)
                 .frame(egui::Frame::new().fill(SIDEBAR()).inner_margin(12))
                 .show(ui, |ui| {
-                    section(ui, "WORKSPACE");
-                    ui.add_space(6.);
-                    for (page, kind) in [
-                        (Page::History, Icon::Graph),
-                        (Page::Changes, Icon::Files),
-                        (Page::Snapshots, Icon::Layers),
-                        (Page::Github, Icon::Cloud),
-                        (Page::Tools, Icon::Code),
-                    ] {
-                        self.navigation_row(ui, page, kind);
-                    }
-                    ui.add_space(16.);
-                    section(ui, "SYSTEM");
-                    ui.add_space(6.);
-                    self.navigation_row(ui, Page::Remotes, Icon::Folder);
-                    self.navigation_row(ui, Page::Settings, Icon::Settings);
+                    egui::ScrollArea::vertical()
+                        .id_salt("workspace_navigation")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 4.;
+                            section(ui, "WORKSPACE");
+                            ui.add_space(6.);
+                            for (page, kind) in [
+                                (Page::History, Icon::Graph),
+                                (Page::Branches, Icon::Branch),
+                                (Page::Compare, Icon::Graph),
+                                (Page::Merge, Icon::Branch),
+                                (Page::Changes, Icon::Files),
+                                (Page::Conflicts, Icon::Conflict),
+                            ] {
+                                self.navigation_row(ui, page, kind);
+                            }
+                            ui.add_space(14.);
+                            section(ui, "RECOVERY");
+                            ui.add_space(6.);
+                            self.navigation_row(ui, Page::Snapshots, Icon::Layers);
+                            self.navigation_row(ui, Page::Stashes, Icon::Archive);
+                            ui.add_space(14.);
+                            section(ui, "COLLABORATION");
+                            ui.add_space(6.);
+                            self.navigation_row(ui, Page::Github, Icon::Cloud);
+                            ui.add_space(14.);
+                            section(ui, "REPOSITORY");
+                            ui.add_space(6.);
+                            self.navigation_row(ui, Page::Remotes, Icon::Folder);
+                            ui.add_space(14.);
+                            section(ui, "TOOLS");
+                            ui.add_space(6.);
+                            self.navigation_row(ui, Page::Tools, Icon::Code);
+                            self.navigation_row(ui, Page::Settings, Icon::Settings);
+                        });
                 });
         }
         let show_project_inspector = self.inspector_open
+            && !self.selected_commit.is_empty()
             && matches!(self.page, Page::History | Page::Branches | Page::Compare)
-            && ctx.content_rect().width() >= 1100.;
+            && ctx.content_rect().width() >= 1200.;
         if show_project_inspector {
             egui::Panel::right("project_commit_inspector")
                 .default_size(320.)
@@ -394,7 +467,7 @@ impl Branchroom {
                 }
                 if let Some(repo) = &self.repo {
                     let count = repo.changes.iter().filter(|c| c.conflict()).count();
-                    if count > 0 || !repo.operation.is_empty() {
+                    if self.page != Page::Conflicts && (count > 0 || !repo.operation.is_empty()) {
                         egui::Frame::new()
                             .fill(SELECTED())
                             .inner_margin(12)
@@ -426,18 +499,27 @@ impl Branchroom {
 
                 if matches!(self.page, Page::History | Page::Branches | Page::Merge | Page::Compare) {
                     self.load_graph_context(ctx);
-                    egui::Frame::new().inner_margin(egui::Margin::symmetric(16,0)).show(ui,|ui|{ui.horizontal_wrapped(|ui| {
-                        for (page, label) in [(Page::History, "Commits"), (Page::Branches, "Branch map"), (Page::Compare, "Compare")] {
-                            if ui.selectable_label(self.page == page, label).clicked() { self.page = page; }
-                        }
-                        if self.settings.advanced_mode {
-                        ui.menu_button("Advanced", |ui| {
-                            if ui.button("Preview a graph action").clicked(){self.open_graph_form();ui.close();}
-                            if ui.button("History operation forms").clicked(){self.page=Page::Compare;self.comparison.advanced=true;ui.close();}
-                            if ui.button("Merge branches").clicked() { self.page = Page::Merge; ui.close(); }
-                        });
-                        }
-                    });});
+                    if self.settings.advanced_mode {
+                        egui::Frame::new()
+                            .inner_margin(egui::Margin::symmetric(16, 0))
+                            .show(ui, |ui| {
+                                ui.menu_button("Advanced", |ui| {
+                                    if ui.button("Preview a graph action").clicked() {
+                                        self.open_graph_form();
+                                        ui.close();
+                                    }
+                                    if ui.button("History operation forms").clicked() {
+                                        self.page = Page::Compare;
+                                        self.comparison.advanced = true;
+                                        ui.close();
+                                    }
+                                    if ui.button("Merge branches").clicked() {
+                                        self.page = Page::Merge;
+                                        ui.close();
+                                    }
+                                });
+                            });
+                    }
                 }
                 match self.page {
                     Page::History => self.history(ui, ctx), Page::Snapshots => self.snapshots(ui, ctx), Page::Changes => self.changes(ui, ctx),
@@ -1142,12 +1224,7 @@ impl Branchroom {
         });
     }
     fn navigation_row(&mut self, ui: &mut egui::Ui, page: Page, kind: Icon) {
-        let selected = self.page == page
-            || match page {
-                Page::History => matches!(self.page, Page::Branches | Page::Merge | Page::Compare),
-                Page::Snapshots => self.page == Page::Stashes,
-                _ => false,
-            };
+        let selected = self.page == page;
         let response = ui.add_sized(
             [ui.available_width(), 36.],
             egui::Button::new("")
@@ -1190,7 +1267,11 @@ impl Branchroom {
         }
     }
     fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        egui::Frame::new().inner_margin(36).show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .id_salt("welcome_content")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::new().inner_margin(36).show(ui, |ui| {
             ui.label(
                 RichText::new("See your project clearly")
                     .size(TEXT_TITLE)
@@ -1201,37 +1282,69 @@ impl Branchroom {
                 "Open a repository to see its branches and commits, save local checkpoints, and share changes safely.",
             );
             ui.add_space(16.);
+            let compact_actions = ui.available_width() < 620.;
             ui.horizontal_wrapped(|ui| {
                 if primary(ui, "Open repository…").clicked()
                     && let Some(path) = rfd::FileDialog::new().pick_folder()
                 {
                     self.open_repo(path, ctx);
                 }
-                if ui.button("Clone repository…").clicked() {
-                    self.page = Page::Remotes;
-                }
-                if ui.button("Create repository…").clicked() {
-                    self.page = Page::Remotes;
+                if compact_actions {
+                    ui.menu_button("Clone or create…", |ui| {
+                        if ui.button("Clone repository…").clicked() {
+                            self.page = Page::Remotes;
+                            ui.close();
+                        }
+                        if ui.button("Create repository…").clicked() {
+                            self.page = Page::Remotes;
+                            ui.close();
+                        }
+                    });
+                } else {
+                    if ui.button("Clone repository…").clicked() {
+                        self.page = Page::Remotes;
+                    }
+                    if ui.button("Create repository…").clicked() {
+                        self.page = Page::Remotes;
+                    }
                 }
             });
             ui.add_space(22.);
-            ui.horizontal_wrapped(|ui| {
+            let features = [
+                (
+                    "Project",
+                    ACCENT(),
+                    "See branches, commits, and Pull Requests on one graph.",
+                ),
+                (
+                    "Changes",
+                    ADDED(),
+                    "Stage only what you want and review the exact commit contents.",
+                ),
+                (
+                    "Checkpoints",
+                    CHECKPOINT(),
+                    "Save local work before trying an idea or risky action.",
+                ),
+            ];
+            let render_feature = |ui: &mut egui::Ui, (title, color, description)| {
                 surface().show(ui, |ui| {
-                    ui.set_min_width(190.);
-                    badge(ui, "Project", ACCENT());
-                    ui.add(egui::Label::new("See branches, commits, and Pull Requests on one graph.").wrap());
+                    badge(ui, title, color);
+                    ui.add(egui::Label::new(description).wrap());
                 });
-                surface().show(ui, |ui| {
-                    ui.set_min_width(190.);
-                    badge(ui, "Changes", ADDED());
-                    ui.add(egui::Label::new("Stage only what you want and review the exact commit contents.").wrap());
-                });
-                surface().show(ui, |ui| {
-                    ui.set_min_width(190.);
-                    badge(ui, "Checkpoints", CHECKPOINT());
-                    ui.add(egui::Label::new("Save local work before trying an idea or risky action.").wrap());
-                });
-            });
+            };
+            if ui.available_width() >= 620. {
+                ui.columns(3, |columns| {
+                    for (column, feature) in columns.iter_mut().zip(features) {
+                        render_feature(column, feature);
+                    }
+                }
+                );
+            } else {
+                for feature in features {
+                    render_feature(ui, feature);
+                }
+            }
             ui.add_space(22.);
             section(ui, "RECENT REPOSITORIES");
             for path in self.settings.recent.clone().iter().take(5) {
@@ -1248,7 +1361,8 @@ impl Branchroom {
                     self.open_repo(path.clone(), ctx);
                 }
             }
-        });
+                });
+            });
     }
     pub(super) fn patch_drawer(&mut self, ui: &mut egui::Ui, wide_region_reserved: bool) {
         if !self.detail_open || self.detail_page != self.page {

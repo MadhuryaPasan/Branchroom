@@ -92,6 +92,7 @@ impl Branchroom {
             Task::PullRequestPreview { .. } => "Previewing pull request…",
             Task::OpenPr { .. } => "Downloading pull request for IDE review…",
             Task::UpdateBranch { .. } => "Fetching baseline and updating branch…",
+            Task::ConflictSides(_) => "Loading conflict versions…",
             Task::Revert { .. } => "Creating revert commit…",
             _ => "Running operation…",
         }

@@ -260,13 +260,21 @@ impl Branchroom {
                             format!("Compare with: {}", self.compare_head),
                         )
                     });
-                    if ctx.content_rect().width() < 1100. {
-                        ui.toggle_value(&mut self.inspector_drawer_open, "Commit details drawer");
+                    if self.selected_commit.is_empty() {
+                        ui.add_sized(
+                            [220., 36.],
+                            egui::Label::new(
+                                RichText::new("Select a commit to view details").color(MUTED()),
+                            )
+                            .wrap(),
+                        );
+                    } else if ctx.content_rect().width() < 1200. {
+                        ui.toggle_value(&mut self.inspector_drawer_open, "Commit details");
                     } else {
                         ui.checkbox(&mut self.inspector_open, "Commit details");
                     }
                 });
-                if ctx.content_rect().width() < 1100. && self.inspector_drawer_open {
+                if ctx.content_rect().width() < 1200. && self.inspector_drawer_open {
                     surface().show(ui, |ui| self.commit_inspector(ui, ctx));
                     ui.add_space(12.);
                 }
@@ -556,7 +564,7 @@ impl Branchroom {
                 if let Some(id) = selected {
                     self.comparison.selected_commit = id.clone();
                     self.selected_commit = id;
-                    if ctx.content_rect().width() < 1100. {
+                    if ctx.content_rect().width() < 1200. {
                         self.inspector_drawer_open = true;
                     } else {
                         self.inspector_open = true;

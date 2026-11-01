@@ -227,6 +227,54 @@ fn pull_request_creation_has_branch_preview_and_four_work_tabs() {
     harness.check_accessibility();
 }
 
+#[test]
+fn closed_pull_request_empty_state_matches_selected_filter() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Github, false);
+    harness.state_mut().pr_tab = 5;
+    harness.state_mut().prs_loaded = true;
+    harness.state_mut().pull_requests.clear();
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_label("No closed or merged pull requests.")
+            .is_some()
+    );
+    assert!(
+        harness
+            .query_by_label("No open pull requests. Create one to propose a change.")
+            .is_none()
+    );
+}
+
+#[test]
+fn pull_request_review_action_stays_near_the_preview_at_compact_sizes() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut wide = screen(Page::Github, true);
+    wide.run_steps(3);
+    let review = wide.get_by_label("Review pull request…").rect();
+    let preview = wide.get_by_label("Pull request preview").rect();
+    assert!(
+        review.top() <= preview.bottom() + 40.,
+        "Review action is separated from its preview: {review:?}, {preview:?}"
+    );
+
+    let mut compact = screen(Page::Github, true);
+    compact.ctx.set_zoom_factor(2.);
+    compact.set_size(egui::vec2(530., 350.));
+    compact.run_steps(4);
+    let review = compact.get_by_label("Review pull request…").rect();
+    let window = compact.ctx.content_rect();
+    assert!(
+        review.left() >= window.left() - 1.
+            && review.right() <= window.right() + 1.
+            && review.top() >= window.top() - 1.
+            && review.bottom() <= window.bottom() + 1.,
+        "Compact review action is clipped: {review:?}, {window:?}"
+    );
+}
+
 fn review_fixture() -> branchroom::github::PullRequestDetails {
     branchroom::github::PullRequestDetails{number:42,title:"Keep notes available offline".into(),body:"Cache recent notes so they remain available during a network outage.\n\nTested with a disconnected account.".into(),url:"https://example.invalid/pull/42".into(),state:"OPEN".into(),head_ref_name:"feature/offline".into(),base_ref_name:"main".into(),head_ref_oid:"a".repeat(40),merge_state_status:"CLEAN".into(),changed_files:3,additions:42,deletions:6,..Default::default()}
 }
@@ -334,6 +382,155 @@ fn close_confirmation_cancels_worker_before_closing() {
 }
 
 #[test]
+fn compact_operation_form_keeps_actions_in_viewport() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Branches, false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.state_mut().form = Some(Form {
+        title: "Rename branch".into(),
+        description: "Rename an existing local branch. Review the current and new names before applying the change.".into(),
+        program: "git".into(),
+        prefix: vec!["branch".into(), "-m".into()],
+        fields: vec![
+            Field {
+                label: "Old name".into(),
+                value: "feature/old".into(),
+            },
+            Field {
+                label: "New name".into(),
+                value: String::new(),
+            },
+        ],
+        suffix: vec![],
+        error: String::new(),
+    });
+    harness.run_steps(3);
+    for label in ["Review operation", "Cancel"] {
+        let bounds = harness.get_by_label(label).rect();
+        assert!(
+            bounds.min.x >= 0.
+                && bounds.max.x <= 530.
+                && bounds.min.y >= 0.
+                && bounds.max.y <= 350.,
+            "{label} is outside the compact viewport: {bounds:?}"
+        );
+    }
+}
+
+#[test]
+fn compact_operation_review_keeps_actions_in_viewport() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.state_mut().pending = Some(Pending {
+        title: "Fetch remote".into(),
+        explanation: "Download the latest remote references and objects. This updates remote-tracking branches without changing the checked-out branch or working files.".into(),
+        task: Task::Command {
+            program: "git".into(),
+            args: vec!["fetch".into(), "--all".into(), "--prune".into()],
+            refresh: true,
+        },
+    });
+    harness.run_steps(3);
+    let action_bounds = harness
+        .query_all_by_label("Fetch remote")
+        .nth(1)
+        .expect("confirmation action is visible")
+        .rect();
+    assert!(
+        action_bounds.min.x >= 0.
+            && action_bounds.max.x <= 530.
+            && action_bounds.min.y >= 0.
+            && action_bounds.max.y <= 350.,
+        "Fetch remote is outside the compact viewport: {action_bounds:?}"
+    );
+    {
+        let label = "Cancel";
+        let bounds = harness.get_by_label(label).rect();
+        assert!(
+            bounds.min.x >= 0.
+                && bounds.max.x <= 530.
+                && bounds.min.y >= 0.
+                && bounds.max.y <= 350.,
+            "{label} is outside the compact viewport: {bounds:?}"
+        );
+    }
+}
+
+#[test]
+fn compact_destructive_review_wraps_long_actions() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.state_mut().confirmation_input = "CONFIRM".into();
+    harness.state_mut().pending = Some(Pending {
+        title: "Create revert commit".into(),
+        explanation: "Create a new commit that reverses this change. Existing history is preserved. No changes are pushed.".into(),
+        task: Task::RawGit(vec!["revert".into(), "abc123".into()]),
+    });
+    harness.run_steps(3);
+    let action_bounds = harness
+        .query_all_by_label("Create revert commit")
+        .nth(1)
+        .expect("confirmation action is visible")
+        .rect();
+    assert!(
+        action_bounds.min.x >= 0.
+            && action_bounds.max.x <= 530.
+            && action_bounds.min.y >= 0.
+            && action_bounds.max.y <= 350.,
+        "Create revert commit is outside the compact viewport: {action_bounds:?}"
+    );
+    {
+        let label = "Cancel";
+        let bounds = harness.get_by_label(label).rect();
+        assert!(
+            bounds.min.x >= 0.
+                && bounds.max.x <= 530.
+                && bounds.min.y >= 0.
+                && bounds.max.y <= 350.,
+            "{label} is outside the compact viewport: {bounds:?}"
+        );
+    }
+}
+
+#[test]
+fn changes_list_controls_follow_window_width_not_split_pane_width() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, true);
+    harness.run_steps(3);
+    for label in ["Tree", "List", "Include all files", "View staged"] {
+        assert!(
+            harness.query_by_label(label).is_some(),
+            "{label} should be visible in the desktop file pane"
+        );
+    }
+
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    for label in ["Tree view", "List view", "Include all files", "View staged"] {
+        assert!(
+            harness.query_by_label(label).is_none(),
+            "{label} should move into Actions in the compact layout"
+        );
+    }
+    harness.get_by_label("Actions").click();
+    harness.run_steps(2);
+    for label in ["Tree view", "List view", "Include all files", "View staged"] {
+        assert!(
+            harness.query_by_label(label).is_some(),
+            "{label} should remain reachable in the compact Actions menu"
+        );
+    }
+}
+
+#[test]
 fn compact_changes_keeps_commit_action_reachable() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::Changes, true);
@@ -341,6 +538,8 @@ fn compact_changes_keeps_commit_action_reachable() {
     harness.run_steps(2);
     harness.set_size(egui::vec2(530., 350.));
     harness.run_steps(3);
+    harness.get_by_label("Actions").click();
+    harness.run_steps(2);
     harness.get_by_label("Commit").click();
     harness.run_steps(3);
     assert_eq!(harness.state().compact_changes_tab, 2);
@@ -583,12 +782,32 @@ fn render_redesign_screens() {
         sample.state_mut().preview_state = state;
         sample.state_mut().load_preview_state();
         sample.state_mut().page = Page::Changes;
-        sample.run_steps(3);
+        sample.run_steps(if state == 3 { 10 } else { 3 });
         sample
             .render()
             .unwrap()
             .save(format!("target/qa/redesign/Changes-{name}.png"))
             .unwrap();
+        if state == 4 {
+            let mut compact = screen(Page::Changes, false);
+            compact.ctx.set_zoom_factor(2.);
+            compact.state_mut().preview_state = state;
+            compact.state_mut().load_preview_state();
+            compact.state_mut().page = Page::Changes;
+            compact.run_steps(10);
+            compact
+                .render()
+                .unwrap()
+                .save("target/qa/redesign/Changes-error-compact.png")
+                .unwrap();
+            compact.get_by_label("Dismiss error").click();
+            compact.run_steps(3);
+            compact
+                .render()
+                .unwrap()
+                .save("target/qa/redesign/Changes-error-compact-dismissed.png")
+                .unwrap();
+        }
     }
     let mut columns = screen(Page::History, false);
     columns.run_steps(3);
@@ -601,6 +820,322 @@ fn render_redesign_screens() {
         .unwrap()
         .save("target/qa/redesign/Columns-menu.png")
         .unwrap();
+}
+
+#[test]
+#[ignore = "Exports post-redesign comparison and activity layouts for visual inspection."]
+fn render_redesign_verification() {
+    use egui_kittest::kittest::Queryable;
+
+    std::fs::create_dir_all("target/qa/redesign-verification").unwrap();
+    for (width, height, zoom) in [(1320., 820., 1.), (700., 600., 1.), (530., 350., 2.)] {
+        let mut compare = screen(Page::Compare, false);
+        compare.ctx.set_zoom_factor(zoom);
+        compare.set_size(egui::vec2(width, height));
+        compare.run_steps(3);
+        compare
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Compare-{width}.png"
+            ))
+            .unwrap();
+
+        let mut history = screen(Page::History, false);
+        history.ctx.set_zoom_factor(zoom);
+        history.set_size(egui::vec2(width, height));
+        history.run_steps(3);
+        history
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/History-{width}.png"
+            ))
+            .unwrap();
+
+        let mut activity = screen(Page::Compare, false);
+        activity.ctx.set_zoom_factor(zoom);
+        activity.set_size(egui::vec2(width, height));
+        let (_sender, receiver) = mpsc::channel();
+        let app = activity.state_mut();
+        app.activity_open = true;
+        app.receiver = Some(receiver);
+        app.busy = "Running operation…".into();
+        app.output = "Repository ready".into();
+        app.cancellation = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        activity.run_steps(3);
+        activity
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Activity-{width}.png"
+            ))
+            .unwrap();
+
+        let mut pull_requests = screen(Page::Github, true);
+        pull_requests.state_mut().pr_tab = 3;
+        pull_requests.ctx.set_zoom_factor(zoom);
+        pull_requests.set_size(egui::vec2(width, height));
+        pull_requests.run_steps(3);
+        pull_requests
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Pull-requests-{width}.png"
+            ))
+            .unwrap();
+
+        let mut merge = screen(Page::Merge, false);
+        merge.ctx.set_zoom_factor(zoom);
+        merge.set_size(egui::vec2(width, height));
+        merge.run_steps(3);
+        merge
+            .render()
+            .unwrap()
+            .save(format!("target/qa/redesign-verification/Merge-{width}.png"))
+            .unwrap();
+
+        let mut branches = screen(Page::Branches, false);
+        branches.ctx.set_zoom_factor(zoom);
+        branches.set_size(egui::vec2(width, height));
+        branches.run_steps(3);
+        branches
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Branches-{width}.png"
+            ))
+            .unwrap();
+
+        let mut conflicts = screen(Page::Conflicts, false);
+        conflicts.ctx.set_zoom_factor(zoom);
+        conflicts.set_size(egui::vec2(width, height));
+        conflicts.run_steps(3);
+        conflicts
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Conflicts-{width}.png"
+            ))
+            .unwrap();
+
+        let mut github = screen(Page::Github, true);
+        github.ctx.set_zoom_factor(zoom);
+        github.set_size(egui::vec2(width, height));
+        github.run_steps(3);
+        github
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Pull-requests-{width}.png"
+            ))
+            .unwrap();
+
+        let mut repositories = screen(Page::Remotes, false);
+        repositories.ctx.set_zoom_factor(zoom);
+        repositories.set_size(egui::vec2(width, height));
+        repositories.run_steps(3);
+        repositories
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Repositories-{width}.png"
+            ))
+            .unwrap();
+
+        let mut settings = screen(Page::Settings, false);
+        settings.ctx.set_zoom_factor(zoom);
+        settings.set_size(egui::vec2(width, height));
+        settings.run_steps(3);
+        settings
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Settings-{width}.png"
+            ))
+            .unwrap();
+
+        let mut tools = screen(Page::Tools, false);
+        tools.ctx.set_zoom_factor(zoom);
+        tools.set_size(egui::vec2(width, height));
+        tools.run_steps(3);
+        tools
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Command-center-{width}.png"
+            ))
+            .unwrap();
+
+        let mut changes = screen(Page::Changes, true);
+        changes.ctx.set_zoom_factor(zoom);
+        changes.set_size(egui::vec2(width, height));
+        changes.run_steps(3);
+        changes
+            .render()
+            .unwrap()
+            .save(format!(
+                "target/qa/redesign-verification/Changes-{width}.png"
+            ))
+            .unwrap();
+
+        for (page, name) in [(Page::Snapshots, "Checkpoints"), (Page::Stashes, "Shelved")] {
+            let mut recovery = screen(page, false);
+            recovery.ctx.set_zoom_factor(zoom);
+            recovery.set_size(egui::vec2(width, height));
+            recovery.run_steps(3);
+            if page == Page::Stashes {
+                if height < 500. {
+                    recovery.get_by_label("Timeline view: All items").click();
+                    recovery.run_steps(2);
+                }
+                recovery.get_by_label("Shelved").click();
+                recovery.run_steps(3);
+            }
+            recovery
+                .render()
+                .unwrap()
+                .save(format!(
+                    "target/qa/redesign-verification/{name}-{width}.png"
+                ))
+                .unwrap();
+        }
+    }
+
+    let mut compact_repositories = screen(Page::Remotes, false);
+    compact_repositories.set_size(egui::vec2(700., 900.));
+    compact_repositories.run_steps(3);
+    compact_repositories
+        .render()
+        .unwrap()
+        .save("target/qa/redesign-verification/Repositories-700-tall.png")
+        .unwrap();
+}
+
+#[test]
+fn repository_management_panels_reflow_at_compact_widths() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut wide = screen(Page::Remotes, false);
+    wide.set_size(egui::vec2(1320., 820.));
+    wide.run_steps(3);
+    let remotes = wide.get_by_label("Remotes").rect();
+    let workspaces = wide.get_by_label("Independent parallel workspaces").rect();
+    assert!(
+        workspaces.min.x > remotes.min.x && (workspaces.min.y - remotes.min.y).abs() < 30.,
+        "Repository panels should share a row on wide screens: {remotes:?}, {workspaces:?}"
+    );
+
+    let mut compact = screen(Page::Remotes, false);
+    compact.set_size(egui::vec2(700., 900.));
+    compact.run_steps(3);
+    let remotes = compact.get_by_label("Remotes").rect();
+    let workspaces = compact
+        .get_by_label("Independent parallel workspaces")
+        .rect();
+    assert!(
+        workspaces.min.y > remotes.min.y,
+        "Repository panels should stack on compact screens: {remotes:?}, {workspaces:?}"
+    );
+}
+
+#[test]
+fn settings_panels_reflow_at_compact_widths() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut wide = screen(Page::Settings, false);
+    wide.set_size(egui::vec2(1320., 820.));
+    wide.run_steps(3);
+    let appearance = wide.get_by_label("Workspace appearance").rect();
+    let project_ide = wide
+        .query_all_by_label("Project IDE")
+        .next()
+        .unwrap()
+        .rect();
+    assert!(
+        project_ide.min.x > appearance.min.x && (project_ide.min.y - appearance.min.y).abs() < 30.,
+        "Settings panels should use two columns on wide screens: {appearance:?}, {project_ide:?}"
+    );
+
+    let mut compact = screen(Page::Settings, false);
+    compact.set_size(egui::vec2(700., 900.));
+    compact.run_steps(3);
+    let appearance = compact.get_by_label("Workspace appearance").rect();
+    let project_ide = compact
+        .query_all_by_label("Project IDE")
+        .next()
+        .unwrap()
+        .rect();
+    assert!(
+        project_ide.min.y > appearance.min.y,
+        "Settings panels should stack on compact screens: {appearance:?}, {project_ide:?}"
+    );
+}
+
+#[test]
+fn command_center_inspection_actions_stay_inside_viewport() {
+    use egui_kittest::kittest::Queryable;
+
+    for (width, height, zoom) in [(1320., 820., 1.), (700., 600., 1.), (530., 350., 2.)] {
+        let mut harness = screen(Page::Tools, false);
+        harness.ctx.set_zoom_factor(zoom);
+        harness.set_size(egui::vec2(width, height));
+        harness.run_steps(3);
+        let viewport = harness.ctx.content_rect();
+        for label in [
+            "Reflog",
+            "Tags",
+            "Submodules",
+            "Object storage",
+            "Verify objects",
+            "Configuration",
+            "All Git commands",
+        ] {
+            let rect = harness.get_by_label(label).rect();
+            assert!(
+                rect.left() >= viewport.left() - 1. && rect.right() <= viewport.right() + 1.,
+                "Command center action {label} exceeds the viewport at {width}x{height}, zoom {zoom}: {rect:?}, viewport={viewport:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compact_recovery_menu_keeps_actions_and_views_reachable() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut harness = screen(Page::Snapshots, false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    harness.get_by_label("Recovery actions").click();
+    harness.run_steps(2);
+    for action in [
+        "Save checkpoint…",
+        "Undo last action",
+        "Redo action",
+        "Shelve work",
+    ] {
+        assert!(
+            harness.query_by_label(action).is_some(),
+            "Recovery action {action} is missing from the compact menu"
+        );
+    }
+    harness.get_by_label("Recovery actions").click();
+    harness.run_steps(2);
+    harness.get_by_label("Timeline view: All items").click();
+    harness.run_steps(2);
+    for view in ["Checkpoints", "Commits", "Shelved", "Discarded files"] {
+        assert!(
+            harness.query_all_by_label(view).next().is_some(),
+            "Recovery view {view} is missing from the compact selector"
+        );
+    }
+    harness.get_by_label("Shelved").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Timeline view: Shelved").is_some());
 }
 
 #[test]
@@ -798,6 +1333,13 @@ fn compact_commit_inspector_leaves_history_visible_at_high_zoom() {
 
     let graph = harness.get_by_label("Graph").rect();
     let inspector = harness.get_by_label("Commit details").rect();
+    let first_commit = harness.state().repo.as_ref().unwrap().commits[0].clone();
+    let row = harness
+        .get_by_label(&format!(
+            "{} — {} — {}",
+            first_commit.subject, first_commit.author, first_commit.date
+        ))
+        .rect();
     assert!(
         graph.bottom() < inspector.top(),
         "graph={graph:?}, inspector={inspector:?}"
@@ -806,6 +1348,10 @@ fn compact_commit_inspector_leaves_history_visible_at_high_zoom() {
         inspector.bottom() < harness.ctx.content_rect().bottom(),
         "graph={graph:?}, inspector={inspector:?}, screen={:?}",
         harness.ctx.content_rect()
+    );
+    assert!(
+        row.max.y <= inspector.top(),
+        "first commit row is clipped by commit details: row={row:?}, inspector={inspector:?}"
     );
 }
 
@@ -829,6 +1375,111 @@ fn history_graph_respects_the_docked_inspector_width() {
         history_row.right() <= inspector.left(),
         "History content overlaps the docked inspector: row={history_row:?}, inspector={inspector:?}"
     );
+}
+
+#[test]
+fn narrow_history_toolbar_keeps_graph_status_markers_reachable() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, true);
+    harness.set_size(egui::vec2(1320., 820.));
+    harness.run_steps(3);
+
+    harness.get_by_label("View").click();
+    harness.run_steps(2);
+    for label in ["Working copy", "Checkpoint", "Pull request", "Remote"] {
+        let bounds = harness.get_by_label(label).rect();
+        assert!(
+            bounds.width() >= 35.,
+            "{label} is clipped in the View menu: {bounds:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "Exports the narrow history toolbar's status legend for visual review."]
+fn render_narrow_history_status_legend() {
+    use egui_kittest::kittest::Queryable;
+    std::fs::create_dir_all("target/qa/ui").unwrap();
+    let mut harness = screen(Page::History, true);
+    harness.set_size(egui::vec2(1320., 820.));
+    harness.run_steps(3);
+    harness.get_by_label("View").click();
+    harness.run_steps(2);
+    harness
+        .render()
+        .unwrap()
+        .save("target/qa/ui/history-status-legend.png")
+        .unwrap();
+}
+
+#[test]
+#[ignore = "Exports command palette and operation dialogs for visual review."]
+fn render_palette_and_operation_dialogs() {
+    std::fs::create_dir_all("target/qa/ui").unwrap();
+    for (width, height, zoom, suffix) in
+        [(1320., 820., 1., "standard"), (530., 350., 2., "compact")]
+    {
+        let mut palette = screen(Page::History, false);
+        palette.ctx.set_zoom_factor(zoom);
+        palette.run_steps(2);
+        palette.set_size(egui::vec2(width, height));
+        palette.state_mut().command_bar_open = true;
+        palette.state_mut().command_bar_query = "settings".into();
+        palette.run_steps(3);
+        palette
+            .render()
+            .unwrap()
+            .save(format!("target/qa/ui/command-palette-{suffix}.png"))
+            .unwrap();
+
+        let mut form = screen(Page::Branches, false);
+        form.ctx.set_zoom_factor(zoom);
+        form.run_steps(2);
+        form.set_size(egui::vec2(width, height));
+        form.state_mut().form = Some(Form {
+            title: "Rename branch".into(),
+            description: "Rename an existing local branch. Review the current and new names before applying the change.".into(),
+            program: "git".into(),
+            prefix: vec!["branch".into(), "-m".into()],
+            fields: vec![
+                Field {
+                    label: "Old name".into(),
+                    value: "feature/old".into(),
+                },
+                Field {
+                    label: "New name".into(),
+                    value: "feature/new".into(),
+                },
+            ],
+            suffix: vec![],
+            error: String::new(),
+        });
+        form.run_steps(3);
+        form.render()
+            .unwrap()
+            .save(format!("target/qa/ui/operation-form-{suffix}.png"))
+            .unwrap();
+
+        let mut review = screen(Page::History, false);
+        review.ctx.set_zoom_factor(zoom);
+        review.run_steps(2);
+        review.set_size(egui::vec2(width, height));
+        review.state_mut().pending = Some(Pending {
+            title: "Fetch remote".into(),
+            explanation: "Download the latest remote references and objects. This updates remote-tracking branches without changing the checked-out branch or working files.".into(),
+            task: Task::Command {
+                program: "git".into(),
+                args: vec!["fetch".into(), "--all".into(), "--prune".into()],
+                refresh: true,
+            },
+        });
+        review.run_steps(3);
+        review
+            .render()
+            .unwrap()
+            .save(format!("target/qa/ui/operation-review-{suffix}.png"))
+            .unwrap();
+    }
 }
 
 #[test]
@@ -879,7 +1530,11 @@ fn compact_branch_map_keeps_tree_layout_and_sync_accessible() {
             .query_by_label("Advanced branch operations")
             .is_none()
     );
+    harness.get_by_label("Sync & comparison").click();
+    harness.run_steps(1);
     harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    harness.get_by_label("Sync & comparison").click();
     harness.run_steps(2);
     assert!(
         harness
@@ -893,16 +1548,23 @@ fn compact_branch_map_keeps_tree_layout_and_sync_accessible() {
 fn branch_map_update_action_fits_and_advanced_menu_respects_mode() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::Branches, false);
+    harness.state_mut().inspector_open = false;
+    harness.state_mut().branch_filter = "feature/offline".into();
     harness.run_steps(3);
-    assert!(harness.query_by_label("Update branch").is_some());
+    assert!(harness.query_by_label("Update branch").is_none());
     harness.get_by_label("Actions for feature/offline").click();
     harness.run_steps(2);
+    assert!(harness.query_by_label("Update branch").is_some());
     assert!(
         harness
             .query_by_label("Advanced actions for feature/offline")
             .is_none()
     );
+    harness.get_by_label("Actions for feature/offline").click();
+    harness.run_steps(1);
     harness.state_mut().settings.advanced_mode = true;
+    harness.run_steps(2);
+    harness.get_by_label("Actions for feature/offline").click();
     harness.run_steps(2);
     assert!(
         harness
@@ -1002,6 +1664,186 @@ fn command_bar_opens_with_shortcut_and_filters_actions() {
 }
 
 #[test]
+fn busy_changes_keeps_the_file_list_separate_from_commit_composer() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, false);
+    harness.state_mut().preview_state = 3;
+    harness.state_mut().load_preview_state();
+    harness.state_mut().page = Page::Changes;
+    harness.run_steps(10);
+
+    let last_file = harness
+        .get_by_label("File actions for src/search.rs")
+        .rect();
+    let composer = harness.get_by_label("COMMIT").rect();
+    assert!(
+        last_file.bottom() <= composer.top(),
+        "Changed-file list overlaps commit composer while busy: file={last_file:?}, composer={composer:?}"
+    );
+}
+
+#[test]
+fn error_drawer_keeps_changes_panes_from_overlapping() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, false);
+    harness.state_mut().preview_state = 4;
+    harness.state_mut().load_preview_state();
+    harness.state_mut().page = Page::Changes;
+    harness.state_mut().activity_open = true;
+    harness.run_steps(10);
+
+    let last_file = harness
+        .get_by_label("File actions for src/search.rs")
+        .rect();
+    assert!(harness.query_by_label("COMMIT").is_none());
+    assert!(
+        last_file.bottom() <= harness.ctx.content_rect().bottom(),
+        "Changed-file list is clipped with the error drawer open: file={last_file:?}"
+    );
+    harness.get_by_label("Actions").click();
+    harness.run_steps(2);
+    harness.get_by_label("Commit").click();
+    harness.run_steps(2);
+    let composer = harness.get_by_label("COMMIT").rect();
+    assert!(
+        composer.top() < harness.ctx.content_rect().bottom(),
+        "Commit view is not reachable with the error drawer open: {composer:?}"
+    );
+}
+
+#[test]
+fn error_banner_keeps_activity_details_optional() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, false);
+    harness.state_mut().preview_state = 4;
+    harness.state_mut().load_preview_state();
+    harness.state_mut().page = Page::Changes;
+    harness.run_steps(3);
+
+    assert!(harness.query_by_label("Show details").is_some());
+    assert!(harness.query_by_label("Close log").is_none());
+    harness.get_by_label("Show details").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Close log").is_some());
+}
+
+#[test]
+fn compact_error_can_be_dismissed_to_reveal_changed_files() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Changes, false);
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.state_mut().preview_state = 4;
+    harness.state_mut().load_preview_state();
+    harness.state_mut().page = Page::Changes;
+    harness.run_steps(4);
+
+    let dismiss = harness.get_by_label("Dismiss error").rect();
+    assert!(
+        dismiss.min.x >= 0.
+            && dismiss.max.x <= 530.
+            && dismiss.min.y >= 0.
+            && dismiss.max.y <= 350.,
+        "Dismiss error is outside the compact viewport: {dismiss:?}"
+    );
+    harness.get_by_label("Dismiss error").click();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Dismiss error").is_none());
+    let first_file = harness
+        .get_by_label("File actions for docs/offline.md")
+        .rect();
+    assert!(
+        first_file.min.y >= 0. && first_file.max.y <= 350.,
+        "Changed file row is clipped after dismissing the error: {first_file:?}"
+    );
+    harness.get_by_label("Actions").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Include all files").is_some());
+    assert!(harness.query_by_label("View staged").is_some());
+    assert!(harness.query_by_label("Tree view").is_some());
+    assert!(harness.query_by_label("List view").is_some());
+}
+
+#[test]
+fn compact_welcome_keeps_repository_entry_actions_visible() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().repo = None;
+    harness.state_mut().selected_commit.clear();
+    harness.state_mut().inspector_open = false;
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    for label in ["Open repository…", "Clone or create…"] {
+        let bounds = harness.get_by_label(label).rect();
+        assert!(
+            bounds.min.x >= 0.
+                && bounds.max.x <= 530.
+                && bounds.min.y >= 0.
+                && bounds.max.y <= 350.,
+            "{label} is outside the compact viewport: {bounds:?}"
+        );
+    }
+    harness.get_by_label("Clone or create…").click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label("Clone repository…").is_some());
+    assert!(harness.query_by_label("Create repository…").is_some());
+}
+
+#[test]
+fn welcome_feature_cards_fit_desktop_and_compact_widths() {
+    use egui_kittest::kittest::Queryable;
+    for (width, height, zoom) in [(1320., 820., 1.), (530., 350., 2.)] {
+        let mut harness = screen(Page::History, false);
+        harness.state_mut().repo = None;
+        harness.state_mut().selected_commit.clear();
+        harness.state_mut().inspector_open = false;
+        harness.ctx.set_zoom_factor(zoom);
+        harness.run_steps(2);
+        harness.set_size(egui::vec2(width, height));
+        harness.run_steps(3);
+        for label in [
+            "See branches, commits, and Pull Requests on one graph.",
+            "Stage only what you want and review the exact commit contents.",
+            "Save local work before trying an idea or risky action.",
+        ] {
+            let bounds = harness.get_by_label(label).rect();
+            assert!(
+                bounds.min.x >= 0. && bounds.max.x <= width,
+                "{label} exceeds the {width}px Welcome content width: {bounds:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "Exports the welcome screen at desktop and compact sizes for visual review."]
+fn render_welcome_screens() {
+    std::fs::create_dir_all("target/qa/ui").unwrap();
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().repo = None;
+    harness.state_mut().selected_commit.clear();
+    harness.state_mut().inspector_open = false;
+    harness.run_steps(3);
+    harness
+        .render()
+        .unwrap()
+        .save("target/qa/ui/welcome-desktop.png")
+        .unwrap();
+    harness.ctx.set_zoom_factor(2.);
+    harness.run_steps(2);
+    harness.set_size(egui::vec2(530., 350.));
+    harness.run_steps(3);
+    harness
+        .render()
+        .unwrap()
+        .save("target/qa/ui/welcome-compact.png")
+        .unwrap();
+}
+
+#[test]
 fn wrong_branch_fix_opens_a_reviewed_move_to_branch_action() {
     use egui_kittest::kittest::Queryable;
     let mut harness = screen(Page::History, false);
@@ -1059,6 +1901,10 @@ fn branch_map_shows_worktree_desks_on_their_branch_nodes() {
         .unwrap();
     *std::sync::Arc::make_mut(harness.state_mut().repo.as_mut().unwrap()) = repo;
     harness.run_steps(3);
+    harness
+        .get_by_label(&format!("Actions for {branch}"))
+        .click();
+    harness.run_steps(2);
     assert!(
         harness
             .query_by_label(&format!("Open worktree folder cache-desk for {branch}"))
@@ -1169,6 +2015,183 @@ fn compare_screen_names_each_branch_and_commit_direction() {
 }
 
 #[test]
+fn compare_uses_full_width_until_a_commit_is_selected() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Compare, false);
+    harness.set_size(egui::vec2(1320., 820.));
+    harness.run_steps(4);
+    assert!(harness.query_by_label("Commit details").is_none());
+    assert!(
+        harness
+            .query_by_label("Select a commit to view details")
+            .is_some()
+    );
+    let files = harness.get_by_label("src/cache.rs  +12 / -4").rect();
+    assert!(
+        files.width() >= 850.,
+        "Unselected comparison reserves too much width: {files:?}"
+    );
+
+    let mut compact = screen(Page::Compare, false);
+    compact.ctx.set_zoom_factor(2.);
+    compact.set_size(egui::vec2(530., 350.));
+    compact.run_steps(4);
+    let prompt = compact
+        .get_by_label("Select a commit to view details")
+        .rect();
+    let window = compact.ctx.content_rect();
+    assert!(
+        prompt.left() >= window.left() - 1.
+            && prompt.right() <= window.right() + 1.
+            && prompt.top() >= window.top() - 1.
+            && prompt.bottom() <= window.bottom() + 1.,
+        "Commit details prompt is clipped at 530px/200% zoom: {prompt:?}, window={window:?}"
+    );
+}
+
+#[test]
+fn merge_workspace_keeps_preflight_and_review_actions_visible() {
+    use egui_kittest::kittest::Queryable;
+
+    let mut wide = screen(Page::Merge, false);
+    wide.set_size(egui::vec2(1320., 820.));
+    wide.run_steps(4);
+    let main = wide.get_by_label("Review merge…").rect();
+    let preflight = wide.get_by_label("BEFORE YOU MERGE").rect();
+    let window = wide.ctx.content_rect();
+    assert!(
+        main.left() >= window.left() - 1. && main.right() <= window.right() + 1.,
+        "Merge review action is outside the viewport: {main:?}"
+    );
+    assert!(
+        preflight.left() > main.left() && preflight.left() < window.right(),
+        "Preflight should be presented alongside the merge plan on wide screens: {preflight:?}"
+    );
+    assert!(wide.query_by_label("Working tree").is_some());
+    assert!(wide.query_by_label("Remote changes").is_some());
+    wide.state_mut().output = "Repository ready".into();
+    wide.get_by_label("Review merge…").click();
+    wide.run_steps(3);
+    assert!(wide.state().pending.is_none());
+    assert_eq!(wide.state().output, "Repository ready");
+
+    let mut compact = screen(Page::Merge, false);
+    compact.set_size(egui::vec2(700., 600.));
+    compact.run_steps(4);
+    for label in ["Merge from", "Review merge…", "BEFORE YOU MERGE"] {
+        assert!(
+            compact.query_by_label(label).is_some(),
+            "Compact merge workspace is missing {label}"
+        );
+    }
+}
+
+#[test]
+fn activity_drawer_replaces_status_strip_without_repeating_idle_status() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.state_mut().activity_open = true;
+    harness.state_mut().output = "Repository ready".into();
+    harness.run_steps(3);
+    assert!(harness.query_by_label("Close log").is_some());
+    assert!(harness.query_by_label("Copy output").is_some());
+    assert!(
+        harness
+            .query_by_label("Repository activity and command output appear here.")
+            .is_some()
+    );
+    harness.get_by_label("Repository ready");
+}
+
+#[test]
+fn activity_drawer_keeps_busy_status_and_controls_visible_when_narrow() {
+    use egui_kittest::kittest::Queryable;
+    for size in [egui::vec2(1320., 820.), egui::vec2(530., 350.)] {
+        let mut harness = screen(Page::Compare, false);
+        harness.set_size(size);
+        let (_sender, receiver) = mpsc::channel();
+        let app = harness.state_mut();
+        app.activity_open = true;
+        app.receiver = Some(receiver);
+        app.busy = "Running operation…".into();
+        app.output = "Repository ready".into();
+        app.cancellation = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )));
+        harness.run_steps(3);
+
+        assert_eq!(
+            harness.query_all_by_label("Running operation…").count(),
+            1,
+            "Busy status is duplicated at {size:?}"
+        );
+        for control in ["Cancel operation", "Copy output", "Close log"] {
+            let rect = harness.get_by_label(control).rect();
+            let window = harness.ctx.content_rect();
+            assert!(
+                rect.left() >= window.left() - 1.
+                    && rect.right() <= window.right() + 1.
+                    && rect.top() >= window.top() - 1.
+                    && rect.bottom() <= window.bottom() + 1.,
+                "{control} is clipped at {size:?}: {rect:?}, window={window:?}"
+            );
+        }
+        let output = harness
+            .get_by_label("Repository activity and command output appear here.")
+            .rect();
+        let window = harness.ctx.content_rect();
+        assert!(
+            output.left() >= window.left() - 1.
+                && output.right() <= window.right() + 1.
+                && output.top() >= window.top() - 1.
+                && output.bottom() <= window.bottom() + 1.,
+            "Activity output is clipped at {size:?}: {output:?}, window={window:?}"
+        );
+    }
+}
+
+#[test]
+fn desktop_navigation_exposes_every_workspace_destination() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.set_size(egui::vec2(1320., 820.));
+    harness.run_steps(4);
+    for destination in [
+        "Project",
+        "Changes",
+        "Branches",
+        "Compare",
+        "Merge",
+        "Conflicts",
+        "Checkpoints",
+        "Shelved work",
+        "Pull requests",
+        "Repositories",
+        "Command center",
+        "Settings",
+    ] {
+        assert!(
+            harness.query_all_by_label(destination).next().is_some(),
+            "Desktop navigation is missing {destination}"
+        );
+    }
+    let settings = harness
+        .query_all_by_label("Settings")
+        .next()
+        .unwrap()
+        .rect();
+    assert!(
+        settings.bottom() <= harness.ctx.content_rect().bottom() - 44.,
+        "Settings is hidden below the desktop navigation viewport: {settings:?}"
+    );
+    assert_eq!(
+        harness.query_all_by_label("Command center").count(),
+        1,
+        "Desktop navigation should not duplicate Command center"
+    );
+}
+
+#[test]
 fn compare_layout_keeps_content_visible_across_widths_and_scales() {
     use egui_kittest::kittest::Queryable;
 
@@ -1178,7 +2201,7 @@ fn compare_layout_keeps_content_visible_across_widths_and_scales() {
             harness.ctx.set_zoom_factor(scale);
             harness.set_size(egui::vec2(width, 820.));
             harness.run_steps(4);
-            let wide_layout = harness.ctx.content_rect().width() >= 1100.;
+            let wide_layout = harness.ctx.content_rect().width() >= 1200.;
             let selected_commit = harness.state().repo.as_ref().unwrap().head.clone();
             {
                 let app = harness.state_mut();
@@ -1262,6 +2285,30 @@ fn conflict_banner_only_appears_for_conflicts_or_an_active_operation() {
     harness.get_by_label("Resolve conflicts").click();
     harness.run_steps(2);
     assert_eq!(harness.state().page, Page::Conflicts);
+    assert!(harness.query_by_label("Resolve conflicts").is_none());
+}
+
+#[test]
+fn conflict_version_panes_explain_loading_and_empty_content() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::Conflicts, false);
+    let (_sender, receiver) = mpsc::channel();
+    harness.state_mut().conflict_versions = Default::default();
+    harness.state_mut().receiver = Some(receiver);
+    harness.state_mut().busy = "Loading conflict versions…".into();
+    harness.run_steps(3);
+    assert!(harness.query_all_by_label("Loading version…").count() >= 2);
+
+    harness.state_mut().receiver = None;
+    harness.state_mut().busy.clear();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_all_by_label("No file content in this version.")
+            .count()
+            >= 2
+    );
+    harness.check_accessibility();
 }
 
 #[test]
@@ -1412,6 +2459,24 @@ fn render_branch_pair() {
                 if light { "light" } else { "dark" }
             ))
             .unwrap();
+        if !light {
+            harness.ctx.set_zoom_factor(2.);
+            harness.set_size(egui::vec2(530., 350.));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save("target/qa/ui/branch-pair-compact.png")
+                .unwrap();
+            harness.ctx.set_zoom_factor(1.);
+            harness.set_size(egui::vec2(700., 600.));
+            harness.run_steps(3);
+            harness
+                .render()
+                .unwrap()
+                .save("target/qa/ui/branch-pair-narrow.png")
+                .unwrap();
+        }
     }
 }
 
@@ -1891,7 +2956,10 @@ fn time_machine_replaces_snapshot_modes_and_keeps_recovery_actions_named() {
         "Branch from here…",
         "Delete entry",
     ] {
-        assert!(harness.query_by_label(label).is_some(), "Missing {label}");
+        assert!(
+            harness.query_all_by_label(label).next().is_some(),
+            "Missing {label}"
+        );
     }
     for old in [
         "Tree",

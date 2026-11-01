@@ -138,6 +138,8 @@ impl Branchroom {
                     .inner_margin(egui::Margin::symmetric(16, 12)),
             )
             .show(ui, |ui| {
+                let toolbar_width = ui.available_width();
+                let status_markers_fit = toolbar_width >= 1050.;
                 ui.horizontal_wrapped(|ui| {
                     ui.label(RichText::new("Graph").size(TEXT_HEADER).strong());
                     badge(
@@ -163,11 +165,11 @@ impl Branchroom {
                     if !self.query.is_empty() && ui.small_button("Clear").clicked() {
                         self.query.clear();
                     }
-                    if ctx.content_rect().width()>=800. {
+                    if toolbar_width >= 820. {
                         badge(ui, &repo.branch, ACCENT());
                         ui.label(RichText::new("Checked-out branch").size(12.).color(MUTED())).on_hover_text("All loaded branches share this graph. Select a branch label to inspect its tip.");
                     }
-                    if ctx.content_rect().width() >= 1050. {
+                    if status_markers_fit {
                         ui.separator();
                         badge(ui, "Working copy", WORKING_COPY());
                         badge(ui, "Checkpoint", CHECKPOINT());
@@ -176,6 +178,17 @@ impl Branchroom {
                     }
                     }
                     ui.menu_button("View", |ui| {
+                        if !status_markers_fit {
+                            ui.set_min_width(260.);
+                            ui.label(RichText::new("Graph status markers").strong());
+                            ui.vertical(|ui| {
+                                ui.colored_label(WORKING_COPY(), "Working copy");
+                                ui.colored_label(CHECKPOINT(), "Checkpoint");
+                                ui.colored_label(PULL_REQUEST(), "Pull request");
+                                ui.colored_label(REMOTE(), "Remote");
+                            });
+                            ui.separator();
+                        }
                         if ctx.content_rect().height()<500. {
                             ui.label("Filter commits");ui.add(egui::TextEdit::singleline(&mut self.query).desired_width(260.).hint_text("Message, author, branch or file"));
                             if ui.button(format!("Commit changes · {} files",repo.changes.len())).clicked(){self.page=Page::Changes;self.compact_changes_tab=2;ui.close();}
@@ -330,7 +343,7 @@ impl Branchroom {
                     self.history_view.resolved_widths = widths;
                     let table_width = widths.iter().sum::<f32>();
                     let row_height = if ctx.content_rect().height()<500.{32.}else{[40., 46., 54.][self.density.min(2)] * self.graph_zoom};
-                    if !self.history_list {
+                    if !self.history_list && ctx.content_rect().height() >= 500. {
                         let branches = repo
                             .branches
                             .iter()
@@ -797,7 +810,7 @@ impl Branchroom {
         let wide = workspace.width() >= 840.;
         let mut graph_rect = workspace;
         let mut inspector_rect = None;
-        if self.inspector_open && ctx.content_rect().width() < 1100. {
+        if self.inspector_open && ctx.content_rect().width() < 1200. {
             if self.inspector.expanded {
                 inspector_rect = Some(workspace);
                 graph_rect.max.y = graph_rect.min.y;

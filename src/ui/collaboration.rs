@@ -126,6 +126,7 @@ impl Branchroom {
                     match self.pr_tab {
                         1 => "You have no open pull requests.",
                         2 => "No pull requests are waiting for your review.",
+                        5 => "No closed or merged pull requests.",
                         _ => "No open pull requests. Create one to propose a change.",
                     },
                 );
@@ -310,7 +311,21 @@ impl Branchroom {
         {
             self.pr_publish_remote = remotes.first().cloned().unwrap_or_else(|| "origin".into());
         }
+        let can_publish = ready || (self.pr_publish_if_needed && !remotes.is_empty());
+        let can_create = can_publish
+            && !self.pr_base.trim().is_empty()
+            && !self.pr_title.trim().is_empty()
+            && self.pr_head != self.pr_base
+            && branch.is_some();
         let column_count = if ui.available_width() >= 860. { 2 } else { 1 };
+        let mut review_clicked = false;
+        if column_count == 1 {
+            review_clicked = ui
+                .add_enabled_ui(can_create, |ui| primary(ui, "Review pull request…"))
+                .inner
+                .clicked();
+            ui.add_space(8.);
+        }
         ui.columns(column_count, |columns| {
             surface().show(&mut columns[0], |ui| {
                 ui.label(RichText::new("Create a pull request").strong());
@@ -433,74 +448,6 @@ impl Branchroom {
                         });
                     }
                 }
-                let can_publish = ready || (self.pr_publish_if_needed && !remotes.is_empty());
-                let can_create = can_publish
-                    && !self.pr_base.trim().is_empty()
-                    && !self.pr_title.trim().is_empty()
-                    && self.pr_head != self.pr_base
-                    && branch.is_some();
-                let review_clicked = ui
-                    .add_enabled_ui(can_create, |ui| primary(ui, "Review pull request…"))
-                    .inner
-                    .clicked();
-                if review_clicked {
-                    let request = branchroom::github::CreateRequest {
-                        base: self.pr_base.clone(),
-                        head: self.pr_head.clone(),
-                        head_oid: branch.unwrap().id.clone(),
-                        title: self.pr_title.clone(),
-                        body: self.pr_body.clone(),
-                        draft: self.pr_draft,
-                        publish_if_needed: self.pr_publish_if_needed,
-                        publish_remote: self.pr_publish_remote.clone(),
-                        reviewers: self
-                            .pr_reviewers
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_owned)
-                            .collect(),
-                        labels: self
-                            .pr_labels
-                            .split(',')
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_owned)
-                            .collect(),
-                    };
-                    match request.arguments() {
-                        Ok(_) => {
-                            self.pending = Some(Pending {
-                                title: "Create pull request".into(),
-                                explanation: format!(
-                                    "Base branch: {}\nCompare branch: {}\nTitle: {}\n{}\n{}\nReviewers: {}\nLabels: {}\n\n{}",
-                                    self.pr_base,
-                                    self.pr_head,
-                                    self.pr_title,
-                                    if self.pr_draft {
-                                        "Create as draft"
-                                    } else {
-                                        "Ready for review"
-                                    },
-                                    publication_summary,
-                                    if self.pr_reviewers.trim().is_empty() {
-                                        "none"
-                                    } else {
-                                        self.pr_reviewers.trim()
-                                    },
-                                    if self.pr_labels.trim().is_empty() {
-                                        "none"
-                                    } else {
-                                        self.pr_labels.trim()
-                                    },
-                                    self.pr_body
-                                ),
-                                task: Task::CreatePullRequest(request),
-                            })
-                        }
-                        Err(error) => self.report(Err(error)),
-                    }
-                }
                 if !can_create {
                     subtitle(
                         ui,
@@ -522,9 +469,20 @@ impl Branchroom {
                     );
                 }
             });
-            surface().show(&mut columns[column_count-1], |ui| {
-                ui.label(RichText::new("Pull request preview").strong());
-                subtitle(ui, "Not created yet · review these details before creating it.");
+            surface().show(&mut columns[column_count - 1], |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Pull request preview").strong());
+                    if column_count > 1 {
+                        review_clicked = ui
+                            .add_enabled_ui(can_create, |ui| primary(ui, "Review pull request…"))
+                            .inner
+                            .clicked();
+                    }
+                });
+                subtitle(
+                    ui,
+                    "Not created yet · review these details before creating it.",
+                );
                 ui.horizontal_wrapped(|ui| {
                     badge(ui, "BASE", MUTED());
                     ui.label(RichText::new(&self.pr_base).strong());
@@ -541,11 +499,7 @@ impl Branchroom {
                         } else {
                             "READY FOR REVIEW"
                         },
-                        if self.pr_draft {
-                            MUTED()
-                        } else {
-                            SUCCESS()
-                        },
+                        if self.pr_draft { MUTED() } else { SUCCESS() },
                     );
                     if !self.pr_title.trim().is_empty() {
                         ui.label(RichText::new(&self.pr_title).strong());
@@ -560,7 +514,11 @@ impl Branchroom {
                     subtitle(ui, &format!("Labels: {}", self.pr_labels.trim()));
                 }
                 ui.add_space(12.);
-                ui.label(RichText::new("Changes in this pull request").size(TEXT_SUBHEAD).strong());
+                ui.label(
+                    RichText::new("Changes in this pull request")
+                        .size(TEXT_SUBHEAD)
+                        .strong(),
+                );
                 if !preview_selection_valid {
                     subtitle(
                         ui,
@@ -625,5 +583,63 @@ impl Branchroom {
                 }
             });
         });
+        if review_clicked {
+            let request = branchroom::github::CreateRequest {
+                base: self.pr_base.clone(),
+                head: self.pr_head.clone(),
+                head_oid: branch.unwrap().id.clone(),
+                title: self.pr_title.clone(),
+                body: self.pr_body.clone(),
+                draft: self.pr_draft,
+                publish_if_needed: self.pr_publish_if_needed,
+                publish_remote: self.pr_publish_remote.clone(),
+                reviewers: self
+                    .pr_reviewers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+                labels: self
+                    .pr_labels
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect(),
+            };
+            match request.arguments() {
+                Ok(_) => {
+                    self.pending = Some(Pending {
+                        title: "Create pull request".into(),
+                        explanation: format!(
+                            "Base branch: {}\nCompare branch: {}\nTitle: {}\n{}\n{}\nReviewers: {}\nLabels: {}\n\n{}",
+                            self.pr_base,
+                            self.pr_head,
+                            self.pr_title,
+                            if self.pr_draft {
+                                "Create as draft"
+                            } else {
+                                "Ready for review"
+                            },
+                            publication_summary,
+                            if self.pr_reviewers.trim().is_empty() {
+                                "none"
+                            } else {
+                                self.pr_reviewers.trim()
+                            },
+                            if self.pr_labels.trim().is_empty() {
+                                "none"
+                            } else {
+                                self.pr_labels.trim()
+                            },
+                            self.pr_body
+                        ),
+                        task: Task::CreatePullRequest(request),
+                    })
+                }
+                Err(error) => self.report(Err(error)),
+            }
+        }
     }
 }
