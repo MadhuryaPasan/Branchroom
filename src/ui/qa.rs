@@ -2012,6 +2012,14 @@ fn compare_screen_names_each_branch_and_commit_direction() {
             .query_by_label("Files changed between branches")
             .is_some()
     );
+    assert!(
+        harness
+            .get_by_label("Files changed between branches")
+            .rect()
+            .top()
+            < harness.get_by_label("Only in main").rect().top(),
+        "Changed files should appear before the branch-specific commit lists"
+    );
 }
 
 #[test]
