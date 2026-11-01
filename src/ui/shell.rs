@@ -128,19 +128,21 @@ impl Branchroom {
                                 Page::History,
                                 Page::Changes,
                                 Page::Snapshots,
+                                Page::Stashes,
+                                Page::Branches,
+                                Page::Compare,
+                                Page::Merge,
+                                Page::Conflicts,
                                 Page::Github,
                                 Page::Tools,
+                                Page::Remotes,
+                                Page::Settings,
                             ] {
                                 if ui.button(page.title()).clicked() {
                                     self.page = page;
                                     self.query.clear();
                                     ui.close();
                                 }
-                            }
-                            if self.settings.advanced_mode && ui.button("Command center").clicked()
-                            {
-                                self.page = Page::Tools;
-                                ui.close();
                             }
                         });
                     }

@@ -1522,6 +1522,27 @@ fn shell_actions_remain_inside_a_narrow_window() {
 }
 
 #[test]
+fn narrow_modes_menu_keeps_every_destination_available() {
+    use egui_kittest::kittest::Queryable;
+    let mut harness = screen(Page::History, false);
+    harness.set_size(egui::vec2(900., 600.));
+    harness.run_steps(3);
+    harness.get_by_label("Modes").click();
+    harness.run_steps(2);
+    harness.get_by_label("Shelved work").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().page, Page::Stashes);
+
+    harness.state_mut().page = Page::History;
+    harness.run_steps(2);
+    harness.get_by_label("Modes").click();
+    harness.run_steps(2);
+    harness.get_by_label("Repositories").click();
+    harness.run_steps(2);
+    assert_eq!(harness.state().page, Page::Remotes);
+}
+
+#[test]
 fn branch_map_selection_is_retained_in_commit_view() {
     use egui_kittest::kittest::Queryable;
     let mut harness = branch_pair_fixture();
