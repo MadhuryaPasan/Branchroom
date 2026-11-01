@@ -432,15 +432,71 @@ impl Branchroom {
                             );
                         }
 
+                        surface().show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    RichText::new("Files changed between branches")
+                                        .size(TEXT_SUBHEAD)
+                                        .strong(),
+                                );
+                                badge(ui, &data.files.len().to_string(), MUTED());
+                            });
+                            subtitle(ui, "Files changed between the two selected branch tips.");
+                            if data.files.is_empty() {
+                                subtitle(
+                                    ui,
+                                    if self.preview_mode {
+                                        "File differences load in a live repository."
+                                    } else {
+                                        "These branch tips have the same file content."
+                                    },
+                                );
+                            } else {
+                                let row_height = 34.;
+                                let max_height = ui.available_height().max(240.);
+                                egui::ScrollArea::vertical()
+                                    .id_salt("compare_changed_files")
+                                    .auto_shrink([false, false])
+                                    .max_height(max_height)
+                                    .show_rows(ui, row_height, data.files.len(), |ui, range| {
+                                        for index in range {
+                                            let file = &data.files[index];
+                                            let response = ui
+                                                .with_layout(
+                                                    egui::Layout::left_to_right(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        ui.add_sized(
+                                                            [ui.available_width(), row_height],
+                                                            egui::Button::selectable(
+                                                                self.selected_path == file.path,
+                                                                file.label(),
+                                                            )
+                                                            .truncate(),
+                                                        )
+                                                    },
+                                                )
+                                                .inner
+                                                .on_hover_text(&file.path);
+                                            if response.clicked() {
+                                                self.selected_path = file.path.clone();
+                                                selected_file = Some(file.path.clone());
+                                            }
+                                        }
+                                    });
+                            }
+                        });
+                        ui.add_space(12.);
+
                         let mut show_commit_list =
                             |ui: &mut egui::Ui, title: &str, commits: &[(String, String)]| {
                                 surface().show(ui, |ui| {
-                                    let open = !commits.is_empty();
                                     egui::CollapsingHeader::new(
                                         RichText::new(title).size(TEXT_SUBHEAD).strong(),
                                     )
                                     .id_salt(("compare_commit_list", &key, title))
-                                    .default_open(open)
+                                    .default_open(commits.len() <= 5 && !commits.is_empty())
                                     .show(ui, |ui| {
                                         badge(ui, &commits.len().to_string(), MUTED());
                                         if commits.is_empty() {
@@ -503,62 +559,6 @@ impl Branchroom {
                             ui.add_space(8.);
                             show_commit_list(ui, &format!("Only in {compare_name}"), &data.right);
                         }
-                        ui.add_space(12.);
-                        surface().show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    RichText::new("Files changed between branches")
-                                        .size(TEXT_SUBHEAD)
-                                        .strong(),
-                                );
-                                badge(ui, &data.files.len().to_string(), MUTED());
-                            });
-                            subtitle(ui, "Files changed between the two selected branch tips.");
-                            if data.files.is_empty() {
-                                subtitle(
-                                    ui,
-                                    if self.preview_mode {
-                                        "File differences load in a live repository."
-                                    } else {
-                                        "These branch tips have the same file content."
-                                    },
-                                );
-                            } else {
-                                let row_height = 34.;
-                                let max_height = ui.available_height().max(240.);
-                                egui::ScrollArea::vertical()
-                                    .id_salt("compare_changed_files")
-                                    .auto_shrink([false, false])
-                                    .max_height(max_height)
-                                    .show_rows(ui, row_height, data.files.len(), |ui, range| {
-                                        for index in range {
-                                            let file = &data.files[index];
-                                            let response = ui
-                                                .with_layout(
-                                                    egui::Layout::left_to_right(
-                                                        egui::Align::Center,
-                                                    ),
-                                                    |ui| {
-                                                        ui.add_sized(
-                                                            [ui.available_width(), row_height],
-                                                            egui::Button::selectable(
-                                                                self.selected_path == file.path,
-                                                                file.label(),
-                                                            )
-                                                            .truncate(),
-                                                        )
-                                                    },
-                                                )
-                                                .inner
-                                                .on_hover_text(&file.path);
-                                            if response.clicked() {
-                                                self.selected_path = file.path.clone();
-                                                selected_file = Some(file.path.clone());
-                                            }
-                                        }
-                                    });
-                            }
-                        });
                     }
                 }
                 if let Some(id) = selected {
